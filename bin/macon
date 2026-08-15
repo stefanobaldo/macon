@@ -284,10 +284,31 @@ cli_remove_run_files() {
 # fires at a boot. Restoring is the way back, and it is safe precisely because
 # the orphan test already established there is no session to interrupt.
 cli_heal_orphan() {
+    _oid=$(sess_get "$(sess_desc_path)" session_id)
+    _ostarted=$(sess_get "$(sess_desc_path)" started_at)
     if ! snap_restore; then
         macon_warn "the orphaned session could not be fully restored; check 'macon saved'"
     fi
     cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+    cli_record_end "$_oid" "$_ostarted" orphan
+}
+
+# Writes the index row for a session the helper is not around to close --
+# ended by hand, or healed after its helper disappeared. Three of the spec's
+# termination reasons have no other writer, and a night missing from the index
+# is a night the report cannot show at all.
+#
+# Both fields are checked because they become columns: an empty start epoch is
+# the truncated row that costs the index its sort key, and there is no useful
+# row to write for a session nothing can name.
+cli_record_end() {
+    [ -n "$1" ] || return 0
+    if ! cli_is_number "$2"; then
+        macon_warn "session '$1' ended ($3) but its start time is unreadable; not recorded"
+        return 0
+    fi
+    rec_close_session "$1" "$2" "$(macon_now)" "$3" ||
+        macon_warn "session '$1' ended ($3) but was not recorded"
 }
 
 # The activation ladder. Order matters: everything that can fail without
@@ -467,9 +488,149 @@ cli_cmd_on() {
     printf 'safe to close the lid.\n'
 }
 
+# Stops the watch loop and clears the run directory. The helper goes first and
+# the restore follows: a helper still polling against a descriptor that has
+# been deleted reads every field as empty, and empty operands are exactly what
+# `[ -ge ]` exits 2 on -- a loop that no longer evaluates any of its rungs.
+cli_stop_helper() {
+    sess_helper_alive || return 0
+    _p=$(cat "$(sess_pid_path)" 2>/dev/null)
+
+    # Unprivileged first: the helper runs as root, but the tests do not, and a
+    # sudo prompt inside a suite is a hang rather than a failure.
+    kill "$_p" 2>/dev/null || sudo kill "$_p" 2>/dev/null || :
+
+    _tries=0
+    while [ "$_tries" -lt "$MACON_ARM_TRIES" ] && kill -0 "$_p" 2>/dev/null; do
+        sleep 0.1 2>/dev/null || sleep 1
+        _tries=$((_tries + 1))
+    done
+    if kill -0 "$_p" 2>/dev/null; then
+        macon_warn "the helper (pid $_p) did not stop; restoring anyway"
+    fi
+}
+
+cli_cmd_off() {
+    _d=$(sess_desc_path)
+    _id=$(sess_get "$_d" session_id)
+    _started=$(sess_get "$_d" started_at)
+
+    cli_stop_helper
+    cli_remove_run_files "$_d" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+
+    if snap_exists; then
+        if snap_restore; then
+            rm -f "$(snap_path)"
+            printf 'power configuration restored.\n'
+        else
+            # A restore that failed has not consumed the snapshot, and macOS
+            # cannot reconstruct what it holds. Deleting it here would destroy
+            # the only record of the original values while the machine is still
+            # holding the wrong ones.
+            macon_warn "the restore did not fully succeed; the snapshot is kept in $(snap_path)"
+            macon_warn "check 'macon status' before closing the lid again"
+        fi
+    else
+        macon_warn "no snapshot in $(snap_path); only disablesleep can be cleared"
+        macon_warn "if sleep/disksleep/powernap are zeroed, set them by hand:"
+        macon_warn "  sudo pmset -c sleep <min> disksleep <min> powernap <0|1>"
+        # Still worth running: it clears disablesleep, which is the half that
+        # decides whether the lid can be closed at all.
+        snap_restore || :
+        printf 'clamshell sleep re-enabled.\n'
+    fi
+
+    cli_record_end "$_id" "$_started" manual
+}
+
+_cli_row() {
+    printf '%-17s %s\n' "$1" "$2"
+}
+
+cli_cmd_status() {
+    if plat_sleep_disabled; then
+        _cli_row "clamshell sleep:" "DISABLED (safe to close the lid)"
+    else
+        _cli_row "clamshell sleep:" "active (closing the lid suspends)"
+    fi
+    _cli_row "battery:" "$(plat_battery_pct)%"
+    _cli_row "power source:" "$(plat_power_source)"
+    _cli_row "ac sleep/disk/np:" \
+        "$(plat_pmset_read sleep) / $(plat_pmset_read disksleep) / $(plat_pmset_read powernap)"
+
+    if sess_helper_alive; then
+        _d=$(sess_desc_path)
+        _soft=$(sess_get "$_d" soft_deadline)
+        if cli_is_number "$_soft"; then
+            _left=$(( _soft - $(macon_now) ))
+            [ "$_left" -lt 0 ] && _left=0
+            _cli_row "session:" "active, $((_left / 3600))h$(( (_left % 3600) / 60 ))m to the soft deadline"
+        else
+            _cli_row "session:" "active, with an unreadable deadline"
+        fi
+        _cli_row "policy:" "$(sess_get "$_d" policy) / completion: $(sess_get "$_d" completion)"
+    elif sess_orphaned; then
+        # Reported, never healed: a read command stays a read command. A status
+        # that quietly restored would erase the state it is describing.
+        _cli_row "session:" "ORPHANED -- settings applied with no live helper"
+        printf "run 'macon off' to restore.\n"
+    else
+        _cli_row "session:" "none"
+    fi
+
+    if [ -f "$MACON_FS_PLIST" ]; then
+        _cli_row "boot failsafe:" "installed"
+    else
+        _cli_row "boot failsafe:" "absent"
+    fi
+
+    _last=$(rec_sessions 0 | head -1)
+    if [ -n "$_last" ]; then
+        _cli_row "last session:" \
+            "$(printf '%s' "$_last" | cut -f4), worst thermal $(printf '%s' "$_last" | cut -f5)"
+    fi
+}
+
+cli_cmd_saved() {
+    if snap_exists; then
+        printf 'snapshot (%s):\n' "$(snap_path)"
+        sed 's/^/  /' "$(snap_path)"
+        printf "'macon off' will apply: pmset -a disablesleep 0; pmset -c %s\n" \
+            "$(snap_restore_args)"
+    else
+        printf 'no snapshot -- nothing was modified, or macon off already ran.\n'
+    fi
+}
+
+cli_cmd_log() {
+    _id=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) cli_need_arg "$@" || exit 1; _id=$2; shift 2 ;;
+            -*)        macon_die "unknown option: $1" ;;
+            *)         _id=$1; shift ;;
+        esac
+    done
+
+    if [ -z "$_id" ]; then
+        _id=$(rec_sessions 0 | head -1 | cut -f1)
+    fi
+    [ -n "$_id" ] || macon_die "no sessions recorded yet"
+
+    # The id becomes a path, and this one was typed on the command line. The
+    # records module refuses what it cannot use as a filename.
+    _p=$(rec_samples_path "$_id") || macon_die "'$_id' is not a usable session id"
+    [ -f "$_p" ] || macon_die "no samples for session $_id"
+    cat "$_p"
+}
+
 if [ -z "${MACON_CLI_SOURCED:-}" ]; then
     case "${1:-}" in
         on) shift; cli_cmd_on "$@" ;;
+        off) cli_cmd_off ;;
+        status) cli_cmd_status ;;
+        saved) cli_cmd_saved ;;
+        log) shift; cli_cmd_log "$@" ;;
         version) printf 'macon %s\n' "$MACON_VERSION" ;;
         help | --help | -h | '') cli_usage ;;
         *) cli_check_environment; macon_die "subcommand '$1' is not implemented yet" ;;

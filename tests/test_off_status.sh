@@ -1,0 +1,273 @@
+#!/bin/sh
+# shellcheck source=tests/helpers.sh
+. "$TESTS_DIR/helpers.sh"
+setup_state
+MACON_CLI_SOURCED=1
+export MACON_CLI_SOURCED
+# shellcheck source=lib/common.sh
+. "$MACON_LIB/common.sh"
+# shellcheck source=tests/fake-platform.sh
+. "$TESTS_DIR/fake-platform.sh"
+# shellcheck source=lib/decide.sh
+. "$MACON_LIB/decide.sh"
+# shellcheck source=lib/session.sh
+. "$MACON_LIB/session.sh"
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+# shellcheck source=lib/records.sh
+. "$MACON_LIB/records.sh"
+# shellcheck source=bin/macon
+. "$REPO_DIR/bin/macon"
+
+MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
+: > "$MACON_FS_PLIST"
+MACON_ARM_TRIES=3
+MACON_FAKE_NOW=1700000000
+export MACON_FAKE_NOW
+
+mkdir -p "$(sess_run_dir)"
+ID=20260815T000000Z-deadbeef
+
+clean_machine() {
+    fake_set sleep 1
+    fake_set disksleep 10
+    fake_set powernap 1
+    fake_set sleep_disabled no
+    fake_set power_source ac
+    fake_set battery_pct 80
+    fake_set fail_pmset_apply_ac 0
+    fake_set fail_pmset_disablesleep 0
+    rm -f "$MACON_RUN"/* 2>/dev/null || :
+    rm -f "$(snap_path)"
+    snap_save
+    fake_reset_calls
+}
+
+# Puts the machine in the state an armed session leaves it in, with a
+# descriptor the CLI can read back.
+arm() {
+    clean_machine
+    _d=$(sess_desc_path)
+    : > "$_d"
+    sess_set "$_d" session_id "$ID"
+    sess_set "$_d" started_at 1699996400
+    sess_set "$_d" soft_deadline 1700005400
+    sess_set "$_d" hard_ceiling 1700010000
+    sess_set "$_d" policy restore
+    sess_set "$_d" interval 300
+    sess_set "$_d" strikes 2
+    sess_set "$_d" completion sentinel
+    sess_set "$_d" user "$(id -un)"
+    plat_pmset_disablesleep 1
+    plat_pmset_apply_ac sleep 0 disksleep 0 powernap 0
+    fake_reset_calls
+}
+
+# `kill` is a regular builtin, so a function of the same name takes precedence.
+# Driving the stop path through it is what makes this file deterministic: a real
+# background child that has been killed stays a ZOMBIE until it is waited on,
+# and `kill -0` on a zombie still succeeds -- so the obvious "is it gone yet"
+# assertion would be a coin toss. It also keeps the suite away from `sudo kill`,
+# which inside a test run is a hang rather than a failure.
+#
+# It records what it was asked to signal, and what the machine looked like at
+# that moment: the helper has to be stopped BEFORE the restore, or a loop that
+# is still polling ends up reasoning from a descriptor that has been deleted.
+KILLED="$MACON_STATE/killed"
+KILL_SAW="$MACON_STATE/kill_saw"
+: > "$KILLED"
+# SC2032 is correct and is the point: `sudo kill` runs the real binary, not
+# this. The escalation path is deliberately not exercised here -- a suite that
+# actually asked for a password would hang rather than fail -- so what this
+# file pins is the unprivileged branch, which is the one that succeeds whenever
+# the caller owns the helper.
+# shellcheck disable=SC2032,SC2317,SC2329
+kill() {
+    if [ "$1" = "-0" ]; then
+        [ -f "$MACON_STATE/fake/proc_$2" ]
+        return
+    fi
+    printf '%s\n' "$*" >> "$KILLED"
+    fake_get sleep_disabled > "$KILL_SAW"
+    for _a in "$@"; do
+        rm -f "$MACON_STATE/fake/proc_$_a"
+    done
+    return 0
+}
+
+STUB_PID=4242
+start_stub_helper() {
+    printf '%s\n' "$STUB_PID" > "$(sess_pid_path)"
+    printf 'macon-helper start x\n' > "$MACON_STATE/fake/proc_$STUB_PID"
+}
+
+# The fake's process table is scripted, so a process that was never really
+# running has to be retired by hand.
+retire_stub_helper() {
+    rm -f "$MACON_STATE/fake/proc_$STUB_PID"
+}
+
+# --- off --------------------------------------------------------------------
+
+arm
+cli_cmd_off >/dev/null
+assert_eq "1" "$(fake_call_count 'pmset_apply_ac')" "off restores in a single call"
+assert_contains "$(fake_calls)" "pmset_apply_ac sleep 1 disksleep 10 powernap 1" \
+    "off restores the saved values"
+assert_fail "off leaves disablesleep clear" plat_sleep_disabled
+assert_fail "off clears the snapshot" snap_exists
+assert_fail "off clears the descriptor" test -f "$(sess_desc_path)"
+
+# A session ended by hand is still a session. Without a row here, the night is
+# missing from the index entirely -- and the index is what `report` reads.
+_row=$(rec_sessions 0 | head -1)
+assert_eq "$ID" "$(printf '%s' "$_row" | cut -f1)" "off records the session it ended"
+assert_eq "manual" "$(printf '%s' "$_row" | cut -f4)" "and records how it ended"
+assert_eq "1699996400" "$(printf '%s' "$_row" | cut -f2)" "with the start time the descriptor carried"
+
+# Nothing to end: `off` on an idle machine is a no-op that must not invent a row.
+_before=$(rec_sessions 0 | wc -l | tr -d ' ')
+clean_machine
+cli_cmd_off >/dev/null
+assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
+    "off with no session records nothing"
+
+# The helper must be gone BEFORE the restore: a helper still polling against a
+# descriptor that has been deleted is a loop reasoning from empty values.
+arm
+start_stub_helper
+: > "$KILLED"
+cli_cmd_off >/dev/null
+assert_contains "$(cat "$KILLED")" "$STUB_PID" "off signals the helper"
+assert_eq "yes" "$(cat "$KILL_SAW")" \
+    "the helper is signalled while the settings are still applied, not after"
+assert_fail "off clears the pid file" test -f "$(sess_pid_path)"
+assert_fail "off leaves no live helper behind" sess_helper_alive
+
+# A restore that failed has not consumed the snapshot, and deleting it there
+# destroys the only record of the original values -- while the machine is still
+# holding the wrong ones.
+arm
+fake_set fail_pmset_apply_ac 1
+OUT=$(cli_cmd_off 2>&1)
+assert_ok "a failed restore keeps the snapshot" snap_exists
+assert_contains "$OUT" "did not fully succeed" "and says so"
+assert_eq "sleep 1 disksleep 10 powernap 1" "$(snap_restore_args)" \
+    "the kept snapshot is intact"
+
+# No snapshot: disablesleep can still be cleared, and that is the half that
+# matters. What cannot be guessed is not guessed.
+clean_machine
+plat_pmset_disablesleep 1
+rm -f "$(snap_path)"
+fake_reset_calls
+OUT=$(cli_cmd_off 2>&1)
+assert_contains "$OUT" "no snapshot" "off without a snapshot says so"
+assert_fail "off without a snapshot still lets the machine sleep" plat_sleep_disabled
+assert_eq "0" "$(fake_call_count 'pmset_apply_ac')" \
+    "and applies nothing it would have to invent"
+
+# --- healing an orphan ------------------------------------------------------
+#
+# Settings applied, no live helper, stale heartbeat: nothing will end this
+# session on its own, because the boot failsafe only fires at a boot.
+
+# An older session id than the one `off` recorded above, so the row this
+# section asserts on is found by id rather than by being the newest.
+OID=20260814T000000Z-cafebabe
+arm
+sess_set "$(sess_desc_path)" session_id "$OID"
+sess_set "$(sess_desc_path)" started_at 1699996000
+printf '1000\n' > "$(sess_heartbeat_path)"
+assert_ok "the fixture is an orphan" sess_orphaned
+cli_heal_orphan
+assert_fail "healing lets the machine sleep again" plat_sleep_disabled
+assert_eq "1" "$(plat_pmset_read sleep)" "healing restores the saved values"
+assert_fail "healing clears the descriptor" test -f "$(sess_desc_path)"
+assert_fail "healing clears the heartbeat" test -f "$(sess_heartbeat_path)"
+_row=$(rec_sessions 0 | awk -F'\t' -v id="$OID" '$1 == id')
+assert_eq "$OID" "$(printf '%s' "$_row" | cut -f1)" "healing records the session it ended"
+assert_eq "orphan" "$(printf '%s' "$_row" | cut -f4)" "and records why the row exists"
+assert_eq "1699996000" "$(printf '%s' "$_row" | cut -f2)" \
+    "with the start time the abandoned descriptor still carried"
+
+# --- status -----------------------------------------------------------------
+#
+# It is a read command and must stay one: an orphan is REPORTED, never healed.
+# A status that quietly restored would make the state it describes disappear as
+# it described it.
+
+arm
+printf '999999\n' > "$(sess_pid_path)"
+printf '1000\n' > "$(sess_heartbeat_path)"
+fake_reset_calls
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "ORPHANED" "status reports an orphaned session"
+assert_eq "0" "$(fake_call_count 'pmset')" "status makes no pmset calls"
+assert_ok "status leaves the machine still applied" plat_sleep_disabled
+assert_ok "status leaves the descriptor in place" test -f "$(sess_desc_path)"
+
+arm
+start_stub_helper
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "DISABLED" "status reports that the lid is safe to close"
+assert_contains "$OUT" "active" "status reports a live session"
+assert_contains "$OUT" "1h30m" "status reports the time left to the soft deadline"
+assert_contains "$OUT" "sentinel" "status names the completion source"
+assert_contains "$OUT" "80%" "status reports the battery level"
+assert_contains "$OUT" "installed" "status reports the boot failsafe"
+retire_stub_helper
+
+# Past the soft deadline the remaining time is clamped, not negative: the
+# session is still running, on the ceiling's clock.
+arm
+start_stub_helper
+sess_set "$(sess_desc_path)" soft_deadline 1699999000
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "0h0m" "a passed soft deadline reads as no time left"
+retire_stub_helper
+
+clean_machine
+rm -f "$MACON_FS_PLIST"
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "none" "status reports an idle machine"
+assert_contains "$OUT" "absent" "status reports a missing boot failsafe"
+assert_contains "$OUT" "manual" "status reports how the last session ended"
+: > "$MACON_FS_PLIST"
+
+# --- saved ------------------------------------------------------------------
+
+clean_machine
+OUT=$(cli_cmd_saved)
+assert_contains "$OUT" "sleep 1 disksleep 10 powernap 1" "saved shows the restore arguments"
+assert_contains "$OUT" "$(snap_path)" "saved names the file it read"
+rm -f "$(snap_path)"
+OUT=$(cli_cmd_saved)
+assert_contains "$OUT" "no snapshot" "saved says so when there is nothing stored"
+
+# --- log --------------------------------------------------------------------
+
+clean_machine
+rec_append_sample "$ID" 1700000300 Nominal yes 80
+rec_append_sample "$ID" 1700000600 Serious yes 74
+rec_close_session "$ID" 1699996400 1700000900 "done"
+OUT=$(cli_cmd_log)
+assert_contains "$OUT" "Serious" "log defaults to the most recent session"
+OUT=$(cli_cmd_log --session "$ID")
+assert_contains "$OUT" "Nominal" "log accepts an explicit session"
+OUT=$(cli_cmd_log "$ID")
+assert_contains "$OUT" "Nominal" "log accepts a bare session id too"
+
+# The id becomes a path, and this one comes from the command line. cli_cmd_log
+# exits on refusal, so it is called in a subshell -- asserted through the
+# command itself rather than through the guard it delegates to, or the
+# assertion would hold even if log never consulted the guard.
+try_log() {
+    ( cli_cmd_log "$@" )
+}
+assert_fail "log refuses an id that is not a plain identifier" \
+    try_log '../../etc/passwd'
+assert_fail "log refuses an id with no samples" try_log 20260101T000000Z-00000000
+
+unset MACON_FAKE_NOW
+teardown_state
