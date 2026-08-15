@@ -169,9 +169,12 @@ IDG=20260819T000000Z-11223344
 rec_append_sample "$IDG" 1700400000 Nominal yes 50
 assert_fail "a thermal value containing a tab is refused" \
     rec_append_sample "$IDG" 1700400300 "Nom$(printf '\t')inal" yes 50
+# Spaces, not tabs, in the forged row: a payload carrying both is refused by the
+# tab branch before the newline branch is ever consulted, so it would assert the
+# tab guard twice and the newline guard never.
 assert_fail "a thermal value containing a newline is refused" \
     rec_append_sample "$IDG" 1700400600 "Nominal
-1700409999	Sleeping	yes	1" yes 50
+1700409999 Sleeping yes 1" yes 50
 assert_eq "1" "$(rec_aggregate "$IDG" | cut -f4)" "neither refused sample reached the file"
 assert_eq "Nominal" "$(rec_aggregate "$IDG" | cut -f1)" "the forged row never became a sample"
 

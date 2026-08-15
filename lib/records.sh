@@ -89,11 +89,22 @@ rec_append_session() {
 
 # Echoes WORST<TAB>WORST_AT<TAB>MIN_BATT<TAB>COUNT for one session.
 #
-# Always four populated fields, on every path. A session that ends before its
-# first poll has no sample file at all, and returning nothing there would hand
-# the caller three empty columns to splice into an eight-column index row. The
-# empty count is the sharper edge: `[ "" -gt 0 ]` on bash 3.2 does not return
-# false, it EXITS 2 -- so a caller's guard falls through instead of failing.
+# Two outcomes, and a caller must tell them apart by EXIT STATUS before reading
+# any field:
+#
+#   rc 0 -- four populated fields, on every path that has an id to resolve. A
+#           session that ends before its first poll has no sample file at all,
+#           and returning nothing there would hand the caller three empty
+#           columns to splice into an eight-column index row. The empty count is
+#           the sharper edge: `[ "" -gt 0 ]` on bash 3.2 does not return false,
+#           it EXITS 2 -- so a caller's guard falls through instead of failing.
+#
+#   rc 1 -- the id was refused and NOTHING is printed. `_agg=$(rec_aggregate
+#           "$_id")` consumed without checking `$?` rebuilds precisely the empty
+#           four columns the rc-0 path exists to prevent. Narrow but real, and an
+#           asymmetry rather than a hypothetical: _sess_is_name admits `..` where
+#           _rec_is_id below does not, so an id that passes sess_validate can
+#           still be refused here.
 rec_aggregate() {
     _p=$(rec_samples_path "$1") || return 1
     if [ ! -f "$_p" ]; then
