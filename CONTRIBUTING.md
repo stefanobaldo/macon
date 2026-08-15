@@ -18,6 +18,14 @@ we can talk before you write code.
   change.
 - Branches mirror the same vocabulary: `feat/<slug>`, `fix/<slug>`,
   `docs/<slug>`, `chore/<slug>`, kebab-case.
+- Function-local variables are prefixed `_` and are, in POSIX `sh`, **global
+  anyway** — there is no `local`. The rule that keeps that survivable: never
+  read a `_temp` after calling another `macon` function that assigns the same
+  name. Short names (`_v`, `_p`, `_rc`, `_d`) are shared across modules on
+  purpose, so this is a real constraint and not a theoretical one. Note that a
+  call inside `$( )` runs in a subshell and cannot clobber the caller — several
+  places are safe only because of that, which is worth knowing before you
+  "simplify" one of them into a direct call.
 - `main` is protected. Changes land by pull request with a linear history
   (rebase merge). Versions are annotated tags on `main`, SemVer `0.x`.
 

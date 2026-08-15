@@ -19,6 +19,37 @@ _elapsed=$(( $(date +%s) - _start ))
 assert_eq "143" "$_rc" "run_timeout reports 143 when it kills the command"
 assert_ok "run_timeout returns in under 5s for a 30s command" test "$_elapsed" -lt 5
 
+# The documented limit of macon_run_timeout, pinned rather than trusted: the
+# kill reaches the process started here and NOT that process's children.
+#
+# This is a CHARACTERISATION test. It asserts a limitation, not a desirable
+# property, and it is here because this exact shape already defeated a timeout
+# in this codebase once -- the thermal sampler's, which was bounded and hung
+# anyway. If someone teaches macon_run_timeout to kill a process group, the
+# second assertion below SHOULD fail; update it deliberately rather than
+# deleting it.
+setup_state
+_out="$MACON_STATE/timeout-out"
+
+# Redirected to a file, the caller gets the bound it asked for. A grandchild
+# that outlives the kill writes into a file nobody is waiting on.
+_start=$(date +%s)
+macon_run_timeout 1 sh -c 'sleep 4 & wait' > "$_out" 2>/dev/null
+_elapsed=$(( $(date +%s) - _start ))
+assert_ok "output to a file: the caller waits for the timeout, not the command" \
+    test "$_elapsed" -lt 3
+
+# Collected up a pipe, it does not. The surviving grandchild inherits the write
+# end, so the substitution blocks until the GRANDCHILD exits and the bound is
+# enforced on a process the caller is no longer waiting for.
+_start=$(date +%s)
+_ignored=$(macon_run_timeout 1 sh -c 'sleep 4 & wait' 2>/dev/null)
+_elapsed=$(( $(date +%s) - _start ))
+assert_ok "output up a pipe: the caller waits for the grandchild instead" \
+    test "$_elapsed" -ge 3
+
+teardown_state
+
 # The clock is injectable so poll-order tests are deterministic.
 MACON_FAKE_NOW=1700000000
 export MACON_FAKE_NOW
