@@ -10,6 +10,8 @@ export MACON_FAILSAFE_SOURCED
 . "$TESTS_DIR/fake-platform.sh"
 # shellcheck source=lib/snapshot.sh
 . "$MACON_LIB/snapshot.sh"
+# shellcheck source=lib/records.sh
+. "$MACON_LIB/records.sh"
 # shellcheck source=libexec/failsafe.sh
 . "$REPO_DIR/libexec/failsafe.sh"
 
@@ -181,6 +183,79 @@ assert_contains "$(fake_calls)" "pmset_apply_ac sleep 3 disksleep 30 powernap 1"
 assert_fail "the discovered snapshot is consumed like any other" test -f "$BOB/snapshot"
 MACON_STATE=$_saved_state
 export MACON_STATE
+
+# --- no user context --------------------------------------------------------
+#
+# launchd starts a system daemon with no user context. Every state path here
+# defaults to $HOME/..., and under `set -u` an unset HOME is fatal rather than
+# absent -- the shell would exit between clearing disablesleep and restoring
+# anything, with no log line to say why. Sourced rather than run: running it
+# would drive the REAL platform layer against this machine.
+# The single quotes are the point: $HOME must be expanded by the child shell,
+# after it has sourced the file, not by this one before it starts.
+# shellcheck disable=SC2016
+assert_eq "/var/root" \
+    "$(env -u HOME sh -c '. "$1"; printf "%s\n" "$HOME"' _ "$REPO_DIR/libexec/failsafe.sh")" \
+    "the failsafe defines a home rather than inheriting none"
+
+# --- the night that ended in a panic ----------------------------------------
+#
+# A session that died with the machine leaves a samples file and NO index row:
+# the row is written when a session ends, and the reboot clears only /var/run,
+# while both of these files live in the user's state directory. That asymmetry
+# is the detector, and it survives exactly what the crash destroyed.
+
+CID=20260901T000000Z-0badc0de
+DONE_ID=20260901T010000Z-0000beef
+
+arm
+rec_append_sample "$CID" 1700100000 Nominal yes 90
+rec_append_sample "$CID" 1700100300 Serious yes 71
+# A session that ended properly already has its row, and must not get a second
+# one describing the same night as a reboot.
+rec_append_sample "$DONE_ID" 1700200000 Nominal yes 95
+rec_close_session "$DONE_ID" 1700200000 1700200600 "done"
+fake_set boot_time 1699999970
+failsafe_run
+
+CROW=$(rec_sessions 0 | awk -F'\t' -v id="$CID" '$1 == id')
+assert_eq "reboot" "$(printf '%s' "$CROW" | cut -f4)" \
+    "a session with no index row is recorded as ended by reboot"
+assert_eq "1700100000" "$(printf '%s' "$CROW" | cut -f2)" \
+    "its start is the first sample it managed to write"
+assert_eq "1700100300" "$(printf '%s' "$CROW" | cut -f3)" \
+    "and its end is the last -- the final moment macon saw it alive"
+assert_eq "Serious" "$(printf '%s' "$CROW" | cut -f5)" "the aggregates are the session's own"
+assert_eq "2" "$(printf '%s' "$CROW" | cut -f8)" "including how many samples it left"
+assert_eq "1" "$(rec_sessions 0 | awk -F'\t' -v id="$DONE_ID" '$1 == id' | wc -l | tr -d ' ')" \
+    "a session that ended properly is not recorded twice"
+
+# Idempotent across boots: the row it just wrote is the row that makes it skip
+# the same session next time.
+arm
+fake_set boot_time 1699999970
+failsafe_run
+assert_eq "1" "$(rec_sessions 0 | awk -F'\t' -v id="$CID" '$1 == id' | wc -l | tr -d ' ')" \
+    "the next boot does not record the same session again"
+
+# Not a boot, nothing to reconstruct: the scan is part of the restore and is
+# gated by the same guard.
+NID=20260901T020000Z-0000face
+arm
+rec_append_sample "$NID" 1700300000 Nominal yes 90
+fake_set boot_time 1699913600
+failsafe_run
+assert_eq "" "$(rec_sessions 0 | awk -F'\t' -v id="$NID" '$1 == id')" \
+    "no row is written when this is not a boot"
+
+# The index is written by the user; the failsafe runs as root. Appending to an
+# existing file preserves its ownership, but CREATING it here would leave a
+# root-owned index in a user-owned directory and break the user's next write.
+arm
+rm -f "$(rec_index_path)"
+fake_set boot_time 1699999970
+failsafe_run
+assert_fail "the failsafe does not create the index as root" test -f "$(rec_index_path)"
 
 unset MACON_FAKE_NOW
 teardown_state

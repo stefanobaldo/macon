@@ -6,6 +6,15 @@ set -u
 
 MACON_LIB=${MACON_LIB:-/usr/local/libexec/macon/lib}
 
+# launchd starts a system daemon with no user context, and every state path in
+# this project defaults to $HOME/... . Under `set -u` an unset HOME is not a
+# missing fallback but a FATAL error, and it would land here after disablesleep
+# had been cleared and before anything was restored -- with no log line to say
+# why, because the shell exits before reaching one. /var/root is root's home on
+# macOS, which is where this default belongs for a system daemon anyway.
+: "${HOME:=/var/root}"
+export HOME
+
 # How much uptime still counts as "this is the boot". Wide enough that a slow
 # boot on a spinning-rust-era machine still fires, far narrower than any
 # session.
@@ -18,6 +27,8 @@ if [ -z "${MACON_FAILSAFE_SOURCED:-}" ]; then
     . "$MACON_LIB/platform.sh"
     # shellcheck source=lib/snapshot.sh
     . "$MACON_LIB/snapshot.sh"
+    # shellcheck source=lib/records.sh
+    . "$MACON_LIB/records.sh"
 fi
 
 # This runs at boot with nobody watching and no terminal to print to. The log
@@ -116,21 +127,10 @@ failsafe_resolve_state() {
     fi
 }
 
-failsafe_run() {
-    failsafe_should_run || return 0
-
-    _kept=0
-
-    if plat_pmset_disablesleep 0; then
-        failsafe_log "boot detected: disablesleep cleared"
-    else
-        # The single call that gives the machine its ability to sleep back.
-        # Nothing downstream reports this, so it is logged here or nowhere.
-        failsafe_log "boot detected: FAILED to clear disablesleep"
-        _kept=1
-    fi
-
-    failsafe_resolve_state
+# Applies the snapshot and consumes it. KEPT is 1 when something has already
+# failed, in which case the snapshot survives whatever happens here.
+failsafe_restore_snapshot() {
+    _kept=$1
 
     if ! snap_exists; then
         failsafe_log "no snapshot to restore"
@@ -160,6 +160,70 @@ failsafe_run() {
     else
         failsafe_log "keeping the snapshot: the restore did not fully succeed"
     fi
+}
+
+# A night that ended in a panic is exactly a samples file with no row in the
+# index: the row is written only when a session ends, and the reboot clears
+# only /var/run, while both of these files live in the user's state directory.
+# That asymmetry is the whole detector, and it needs nothing the crash
+# destroyed. Without it, the most interesting night macon can record is the one
+# night it silently discards.
+#
+# ended_at is the last sample, which is up to one poll before the machine
+# actually died. That is the honest value and the one the column already means
+# everywhere else: the last moment macon observed the session alive.
+#
+# This is bookkeeping and runs last, after the restore, where it cannot delay
+# or fail the safety action.
+failsafe_record_crashed() {
+    [ -n "${MACON_STATE:-}" ] || return 0
+
+    _idx=$(rec_index_path)
+    # Appending to an existing file preserves its ownership; CREATING it here
+    # would leave a root-owned index in a user-owned directory and break the
+    # user's next write. No index also means no session has ever ended
+    # normally, so there is nothing here worth reconstructing.
+    [ -f "$_idx" ] || return 0
+
+    for _s in "$MACON_STATE"/samples/*.tsv; do
+        [ -f "$_s" ] || continue
+        _sid=$(basename "$_s" .tsv)
+        # awk rather than grep: the id comes from a filename and would be a
+        # pattern to grep, and a field comparison is what is meant anyway.
+        if awk -F'\t' -v id="$_sid" '$1 == id { f = 1 } END { exit !f }' "$_idx"; then
+            continue
+        fi
+        _start=$(awk -F'\t' 'NR == 1 { print $1; exit }' "$_s")
+        _end=$(awk -F'\t' 'END { print $1 }' "$_s")
+        if ! _failsafe_is_number "$_start" || ! _failsafe_is_number "$_end"; then
+            failsafe_log "session $_sid has no usable timestamps; not recorded"
+            continue
+        fi
+        if rec_close_session "$_sid" "$_start" "$_end" reboot; then
+            failsafe_log "recorded session $_sid as ended by reboot"
+        else
+            failsafe_log "could not record session $_sid as ended by reboot"
+        fi
+    done
+}
+
+failsafe_run() {
+    failsafe_should_run || return 0
+
+    _run_kept=0
+
+    if plat_pmset_disablesleep 0; then
+        failsafe_log "boot detected: disablesleep cleared"
+    else
+        # The single call that gives the machine its ability to sleep back.
+        # Nothing downstream reports this, so it is logged here or nowhere.
+        failsafe_log "boot detected: FAILED to clear disablesleep"
+        _run_kept=1
+    fi
+
+    failsafe_resolve_state
+    failsafe_restore_snapshot "$_run_kept"
+    failsafe_record_crashed
 }
 
 if [ -z "${MACON_FAILSAFE_SOURCED:-}" ]; then
