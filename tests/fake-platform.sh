@@ -23,6 +23,13 @@ fake_calls() {
     cat "$FAKE_DIR/calls"
 }
 
+# Tests assert on the calls made by one action at a time, so they need to clear
+# the log between phases. Going through this helper keeps the fake's internal
+# layout an implementation detail instead of pinning it in every test file.
+fake_reset_calls() {
+    : > "$FAKE_DIR/calls"
+}
+
 # grep -c prints "0" and exits NON-ZERO when nothing matches. The count must
 # therefore be taken from stdout and the status discarded: a `|| printf '0\n'`
 # fallback would append a second zero to the one grep already printed, and
@@ -63,3 +70,17 @@ plat_thermal_pressure() { _v=$(fake_get thermal); printf '%s\n' "${_v:-Nominal}"
 plat_boot_time() { _v=$(fake_get boot_time); printf '%s\n' "${_v:-1700000000}"; }
 
 plat_launchctl() { fake_record "launchctl $*"; }
+
+# Writes N stub plists into DEST, where N is scripted by `fake_set pmprefs_files N`
+# (default 1), and fails when N is zero — mirroring the real unmatched-glob case.
+plat_backup_pmprefs() {
+    fake_record "backup_pmprefs $1"
+    _n=$(fake_get pmprefs_files)
+    _n=${_n:-1}
+    _i=0
+    while [ "$_i" -lt "$_n" ]; do
+        _i=$((_i + 1))
+        printf 'stub\n' > "$1/com.apple.PowerManagement.$_i.plist"
+    done
+    [ "$_n" -gt 0 ]
+}
