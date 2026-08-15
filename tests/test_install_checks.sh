@@ -46,6 +46,17 @@ assert_contains "$OUT" "13" "the refusal names the required version"
 # Every required binary must exist on any supported machine.
 assert_ok "the required binaries are present" install_check_binaries
 
+# id is in the list because install_check_not_root is fed `id -u`, and an empty
+# uid used to be allowed through. Proven by emptying PATH: command -v and printf
+# are builtins, so the function still runs and reports everything as missing.
+# Emptying the search path is the point of this one.
+# shellcheck disable=SC2123
+missing_binaries() ( PATH=/var/empty; install_check_binaries 2>&1 )
+OUT=$(missing_binaries) || :
+assert_contains "$OUT" " id" "id is one of the required binaries"
+assert_contains "$OUT" " pmset" "and so are the ones the tool calls directly"
+assert_fail "an empty PATH fails the binary check" missing_binaries
+
 # --- refusing to run as root ------------------------------------------------
 #
 # The uid is a parameter so the refusal can be asserted by a suite that is not
@@ -58,6 +69,16 @@ assert_ok "the required binaries are present" install_check_binaries
 
 assert_ok "an unprivileged install is allowed" install_check_not_root 501
 assert_fail "running the installer as root is refused" install_check_not_root 0
+
+# A safety check must fail closed. `[ "" -eq 0 ]` errors and exits 2 rather
+# than returning false, so an unreadable uid used to reach `|| return 0` and be
+# ALLOWED -- and an empty $(id -u) is what a sanitised PATH with no id on it
+# produces.
+assert_fail "an empty uid is refused, not allowed" install_check_not_root ""
+assert_fail "a non-numeric uid is refused" install_check_not_root root
+assert_fail "an absurdly long uid is refused" install_check_not_root 99999999999999999999
+OUT=$(install_check_not_root "" 2>&1) || :
+assert_contains "$OUT" "could not read" "and says why rather than erroring from test"
 
 OUT=$(install_check_not_root 0 2>&1) || :
 assert_contains "$OUT" "sudo" "the refusal explains that the script sudo's what it needs"
@@ -176,6 +197,25 @@ OUT=$(install_prefix_note /opt/macon)
 assert_contains "$OUT" "MACON_LIB" "a non-default prefix names MACON_LIB"
 assert_contains "$OUT" "MACON_LIBEXEC" "and MACON_LIBEXEC"
 assert_contains "$OUT" "/opt/macon/libexec/macon/lib" "with the value to give it"
+
+# And says what those exports do NOT buy. Verified on this platform: sudo's
+# env_reset drops MACON_LIB before the root helper reads it, so `macon on`
+# under a non-default prefix cannot arm. A note that stopped at "export these
+# two" would be a reassurance rather than an instruction.
+assert_contains "$OUT" "sudo" "and names what still will not work"
+assert_contains "$OUT" "failsafe" "while saying the boot failsafe is unaffected"
+
+# --- the failsafe registered, or it did not ---------------------------------
+#
+# `macon failsafe install` exits 0 even when the sudo tee inside it failed, so
+# the installer checks the status afterwards instead of believing it.
+
+assert_ok "an installed failsafe reads as registered" \
+    install_failsafe_registered "installed: /Library/LaunchDaemons/local.macon.failsafe.plist"
+assert_fail "an absent one does not" install_failsafe_registered "absent"
+assert_fail "and neither does no output at all" install_failsafe_registered ""
+assert_fail "nor a line that merely mentions installing" \
+    install_failsafe_registered "not installed"
 
 assert_eq "" "$(install_path_note /usr/local "/bin:/usr/local/bin:/usr/bin")" \
     "a prefix already on PATH needs no note"
