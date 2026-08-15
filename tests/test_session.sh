@@ -125,6 +125,26 @@ assert_fail "a ceiling before the soft deadline is rejected" sess_validate "$D"
 write_valid
 sess_set "$D" interval 5
 assert_fail "an interval below the 30s floor is rejected" sess_validate "$D"
+write_valid
+sess_set "$D" interval "$MACON_INTERVAL_FLOOR"
+assert_ok "an interval exactly at the floor is accepted" sess_validate "$D"
+
+# The ceiling is the other half of the same guarantee, and the half that is
+# easy to miss: every rung of the poll order is evaluated ONLY at a poll, so
+# the interval is the resolution of the hard ceiling and of the no-AC abort
+# alike. An interval of a day is a perfectly valid number that defers the
+# ceiling by a day -- the sleep between polls is what would be holding the
+# machine awake, and no guard inside the loop can fire while it runs.
+write_valid
+sess_set "$D" interval "$MACON_INTERVAL_CEIL"
+assert_ok "an interval exactly at the ceiling is accepted" sess_validate "$D"
+write_valid
+sess_set "$D" interval "$((MACON_INTERVAL_CEIL + 1))"
+assert_fail "an interval above the ceiling is rejected" sess_validate "$D"
+write_valid
+sess_set "$D" interval 86400
+assert_fail "an interval that would defer the hard ceiling by a day is rejected" \
+    sess_validate "$D"
 
 # A newline in a value would land as its own KEY=VALUE line, forging a field
 # indistinguishable from a written one. The write is refused outright, and the

@@ -183,8 +183,17 @@ cli_parse_on() {
         fi
     done
 
-    if [ "$OPT_INTERVAL" -lt 30 ]; then
-        macon_warn "--interval has a floor of 30 seconds"
+    # Both bounds come from lib/session.sh rather than being restated here: the
+    # descriptor is validated against those numbers, so a second copy would be
+    # a second place for them to drift -- and drift here means the CLI accepts
+    # what the helper then refuses, at arming time, with the message pointing
+    # at a descriptor field instead of at the flag that set it.
+    if [ "$OPT_INTERVAL" -lt "$MACON_INTERVAL_FLOOR" ]; then
+        macon_warn "--interval has a floor of ${MACON_INTERVAL_FLOOR} seconds"
+        return 1
+    fi
+    if [ "$OPT_INTERVAL" -gt "$MACON_INTERVAL_CEIL" ]; then
+        macon_warn "--interval has a ceiling of ${MACON_INTERVAL_CEIL} seconds: every deadline is only checked at a poll"
         return 1
     fi
 
