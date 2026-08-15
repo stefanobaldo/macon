@@ -199,6 +199,41 @@ assert_eq "1700100000" "$(rec_sessions | head -1 | cut -f2)" \
 rm -rf "$MACON_STATE"
 MACON_STATE=$SAVED_STATE
 
+# --- closing out a session --------------------------------------------------
+#
+# The one call both writers make -- the helper when its loop ends, the CLI when
+# `off` or an orphan heal ends a session the helper is not around to close. It
+# exists so the rule that is easy to get wrong lives in one place: rec_aggregate
+# tells its two outcomes apart by exit status, and splicing four fields out of
+# the silent one rebuilds the half-empty row its sentinels exist to prevent.
+
+IDC=20260820T000000Z-c105ec10
+rec_append_sample "$IDC" 1700500000 Nominal yes 88
+rec_append_sample "$IDC" 1700500300 Serious no 66
+assert_ok "closing a session writes its row" \
+    rec_close_session "$IDC" 1700500000 1700500600 manual
+CROW=$(row_for "$IDC")
+assert_eq "manual" "$(printf '%s' "$CROW" | cut -f4)" "the reason reaches column 4"
+assert_eq "Serious" "$(printf '%s' "$CROW" | cut -f5)" "the aggregate's worst level is spliced in"
+assert_eq "1700500300" "$(printf '%s' "$CROW" | cut -f6)" "and its peak timestamp"
+assert_eq "66" "$(printf '%s' "$CROW" | cut -f7)" "and its minimum battery"
+assert_eq "2" "$(printf '%s' "$CROW" | cut -f8)" "and its sample count"
+
+# A session that ended before its first poll still gets a row, carrying the
+# sentinels rather than four empty columns.
+IDCE=20260820T010000Z-c105ec11
+assert_ok "a session with no samples still closes" \
+    rec_close_session "$IDCE" 1700500000 1700500010 manual
+assert_eq "0" "$(row_for "$IDCE" | cut -f8)" "an unsampled session records a zero count"
+
+# An id the module refuses is the outcome a caller must not paper over: no row
+# at all is right, and a partial row is what this function exists to prevent.
+_before=$(rec_sessions 0 | wc -l | tr -d ' ')
+assert_fail "an unusable id fails the close-out" \
+    rec_close_session '..' 1700500000 1700500600 manual
+assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
+    "and writes no row rather than a half-empty one"
+
 # ...and the guard must admit what the codebase actually produces. common.sh is
 # sourced HERE, deliberately last: records.sh depends on nothing but
 # MACON_STATE, and sourcing it at the top would hide a records.sh that reached
