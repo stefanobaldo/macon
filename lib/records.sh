@@ -120,6 +120,21 @@ rec_append_session() {
 #           asymmetry rather than a hypothetical: _sess_is_name admits `..` where
 #           _rec_is_id above does not, so an id that passes sess_validate can
 #           still be refused here.
+#
+# On the rc-0 path the four fields carry SENTINELS when the session recorded
+# nothing usable, and a consumer that renders them literally is wrong rather
+# than merely ugly:
+#
+#   worst    "unknown"  -- no sample carried a level this module can rank
+#   worst_at 0          -- NOT an instant; as a date it renders 1970
+#   min_b    -1         -- NOT a charge level; as a percentage it renders -1%
+#   count    0          -- the session ended before its first poll
+#
+# They are sentinels rather than empty strings on purpose: the four-field output
+# has to be unconditional, and an empty field is both indistinguishable from a
+# shifted column and fatal to a numeric `[` on bash 3.2. Guarding the DISPLAY is
+# the renderer's job, not this module's -- and `count` is the field to branch
+# on, because it is zero exactly when the other three are unset.
 rec_aggregate() {
     _p=$(rec_samples_path "$1") || return 1
     if [ ! -f "$_p" ]; then
