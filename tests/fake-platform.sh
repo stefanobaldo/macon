@@ -63,7 +63,17 @@ plat_sleep_disabled() { [ "$(fake_get sleep_disabled)" = "yes" ]; }
 
 plat_power_source() { _v=$(fake_get power_source); printf '%s\n' "${_v:-ac}"; }
 
-plat_battery_pct() { _v=$(fake_get battery_pct); printf '%s\n' "${_v:-100}"; }
+# The only reader whose real counterpart can legitimately print NOTHING: a Mac
+# with no battery, or one whose `pmset -g batt` output does not carry a
+# percentage. `${_v:-100}` would make that state unscriptable, so the default
+# applies to an unscripted key and a scripted empty value means empty.
+plat_battery_pct() {
+    if [ -f "$FAKE_DIR/battery_pct" ]; then
+        fake_get battery_pct
+    else
+        printf '100\n'
+    fi
+}
 
 plat_thermal_pressure() { _v=$(fake_get thermal); printf '%s\n' "${_v:-Nominal}"; }
 
