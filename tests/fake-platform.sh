@@ -71,6 +71,16 @@ plat_boot_time() { _v=$(fake_get boot_time); printf '%s\n' "${_v:-1700000000}"; 
 
 plat_launchctl() { fake_record "launchctl $*"; }
 
+# Scripted process table: `fake_set proc_<pid> "<command line>"` makes that PID
+# live with that command, and an unscripted PID is simply not running. Matching
+# goes through grep exactly as the real implementation does, so a test cannot
+# pass here on pattern semantics the real ps|grep would not honour.
+plat_process_matches() {
+    _cmd=$(fake_get "proc_$1")
+    [ -n "$_cmd" ] || return 1
+    printf '%s\n' "$_cmd" | grep -q "$2"
+}
+
 # Writes N stub plists into DEST, where N is scripted by `fake_set pmprefs_files N`
 # (default 1), and fails when N is zero — mirroring the real unmatched-glob case.
 plat_backup_pmprefs() {
