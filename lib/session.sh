@@ -8,6 +8,15 @@
 # because the helper runs powermetrics as root at every poll.
 MACON_INTERVAL_FLOOR=30
 
+# And a ceiling, for the opposite reason. Every rung of the poll order is
+# evaluated only AT a poll, so the interval is the resolution of the hard
+# ceiling and of the no-AC abort: a session overshoots its ceiling by up to one
+# interval, and drains on battery with the lid closed for up to `strikes` of
+# them. An interval of a day is a perfectly ordinary number that would defer
+# the ceiling by a day, and the sleep between polls is not something any guard
+# inside the loop can interrupt.
+MACON_INTERVAL_CEIL=900
+
 MACON_HEARTBEAT_GRACE=3   # missed polls tolerated before declaring an orphan
 
 # Longest value accepted for a numeric field. See _sess_is_number.
@@ -122,8 +131,13 @@ sess_validate() {
         return 1
     fi
 
-    if [ "$(sess_get "$_f" interval)" -lt "$MACON_INTERVAL_FLOOR" ]; then
+    _interval=$(sess_get "$_f" interval)
+    if [ "$_interval" -lt "$MACON_INTERVAL_FLOOR" ]; then
         macon_warn "interval is below the ${MACON_INTERVAL_FLOOR}s floor"
+        return 1
+    fi
+    if [ "$_interval" -gt "$MACON_INTERVAL_CEIL" ]; then
+        macon_warn "interval is above the ${MACON_INTERVAL_CEIL}s ceiling"
         return 1
     fi
 

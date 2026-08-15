@@ -42,12 +42,27 @@ assert_ok "extend with both a source and a ceiling is accepted" \
 # A ceiling below the soft deadline can never be satisfied.
 assert_fail "a ceiling below the duration is rejected" cli_parse_on 8 --max 4
 
-# --- the interval floor -----------------------------------------------------
+# --- the interval bounds ----------------------------------------------------
 #
-# It keeps powermetrics from being hammered as root at every poll.
+# The floor keeps powermetrics from being hammered as root at every poll. The
+# ceiling is the safety half: every deadline is evaluated only at a poll, so
+# the interval is the resolution of the hard ceiling itself.
 
 assert_fail "an interval below 30s is rejected" cli_parse_on 8 --interval 5
 assert_ok "an interval of exactly 30s is accepted" cli_parse_on 8 --interval 30
+assert_ok "an interval at the ceiling is accepted" \
+    cli_parse_on 8 --interval "$MACON_INTERVAL_CEIL"
+assert_fail "an interval above the ceiling is rejected" \
+    cli_parse_on 8 --interval "$((MACON_INTERVAL_CEIL + 1))"
+
+# The two bounds are the descriptor's own, so the CLI can never accept an
+# interval the helper would refuse after the ladder has started mutating. The
+# values are pinned rather than merely read: the assertions above move with the
+# constants, which is what makes them agree, and something has to notice if the
+# constants themselves are widened. Both numbers bound how long a rung of the
+# poll order can go unevaluated, so widening one is a decision, not a tweak.
+assert_eq "30" "$MACON_INTERVAL_FLOOR" "the CLI enforces the descriptor's floor"
+assert_eq "900" "$MACON_INTERVAL_CEIL" "the CLI enforces the descriptor's ceiling"
 
 # --- capture ----------------------------------------------------------------
 
