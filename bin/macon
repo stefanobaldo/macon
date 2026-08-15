@@ -236,6 +236,15 @@ cli_parse_on() {
     return 0
 }
 
+# Where the boot failsafe is registered. Overridable so the tests can prove the
+# refusal without a LaunchDaemon on the machine running them.
+MACON_FS_PLIST=${MACON_FS_PLIST:-/Library/LaunchDaemons/local.macon.failsafe.plist}
+
+# How long the ladder waits for the helper to report itself, in tenths of a
+# second. It has to cover a sudo'd process starting; it must not be long enough
+# that a user watches an armed machine with no watcher on it.
+MACON_ARM_TRIES=${MACON_ARM_TRIES:-20}
+
 cli_check_environment() {
     _major=$(plat_macos_major)
     if ! cli_is_number "$_major" || [ "$_major" -lt "$MACON_MIN_MACOS" ]; then
@@ -243,8 +252,224 @@ cli_check_environment() {
     fi
 }
 
+# Undoes whatever the ladder had managed to apply. The message matters as much
+# as the call: a rollback that itself fails leaves the machine unable to sleep,
+# and that is the one outcome the user has to be told about rather than left to
+# discover at the airport.
+cli_rollback() {
+    macon_warn "$1; rolling back"
+    if ! snap_restore; then
+        macon_warn "THE ROLLBACK DID NOT FULLY SUCCEED -- this Mac may still be unable to sleep"
+        macon_warn "check 'macon status', then run 'macon off'; the snapshot is in $(snap_path)"
+    fi
+}
+
+# Removes run-directory files, escalating only if it has to. /var/run/macon is
+# written by root, so a user cannot always clear it -- but the tests point
+# MACON_RUN at a directory they own, and a sudo prompt inside a test suite is a
+# hang, not a failure. Try unprivileged first and ask for a password only when
+# something actually survived.
+cli_remove_run_files() {
+    rm -f "$@" 2>/dev/null || :
+    for _f in "$@"; do
+        if [ -e "$_f" ]; then
+            sudo rm -f "$@" 2>/dev/null || :
+            return 0
+        fi
+    done
+}
+
+# Settings applied, no live helper, heartbeat stale: the machine is holding a
+# session nobody is watching, and nothing will end it -- the boot failsafe only
+# fires at a boot. Restoring is the way back, and it is safe precisely because
+# the orphan test already established there is no session to interrupt.
+cli_heal_orphan() {
+    if ! snap_restore; then
+        macon_warn "the orphaned session could not be fully restored; check 'macon saved'"
+    fi
+    cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+}
+
+# The activation ladder. Order matters: everything that can fail without
+# touching the machine happens first, and every mutation is followed
+# immediately by a verification that can roll it back.
+#
+# DESCRIPTOR is a path the calling user can write; the helper takes its own
+# root-owned copy on arrival.
+cli_arm() {
+    _d=$1
+
+    # Step 1: the first mutation, and the one that matters. Nothing else is
+    # attempted if it fails, so there is nothing to undo.
+    if ! plat_pmset_disablesleep 1; then
+        macon_warn "could not disable clamshell sleep"
+        return 1
+    fi
+
+    # Only keys this machine actually has: pmset validates the whole key set
+    # per invocation, so one key it does not know fails all of them. All of
+    # them go in ONE call for the same reason -- applying them one at a time
+    # passes through combinations pmset itself rejects.
+    _apply=""
+    for _k in sleep disksleep powernap; do
+        [ -n "$(plat_pmset_read "$_k")" ] && _apply="$_apply $_k 0"
+    done
+    if [ -n "$_apply" ]; then
+        # shellcheck disable=SC2086
+        if ! plat_pmset_apply_ac $_apply; then
+            cli_rollback "the sleep timers could not be zeroed"
+            return 1
+        fi
+    fi
+
+    # Step 2: start the helper. It must own its own root context from the
+    # start: the sudo timestamp would expire overnight and a rollback that
+    # needed a password would fail silently.
+    #
+    # MACON_HELPER_CMD replaces the launcher wholesale, for the tests that
+    # have to watch this fail. The descriptor path is in MACON_DESC.
+    MACON_DESC=$_d
+    export MACON_DESC
+    _cmd=${MACON_HELPER_CMD:-}
+    if [ -z "$_cmd" ]; then
+        _cmd="sudo nohup \"\$MACON_LIBEXEC/macon-helper\" start \"\$MACON_DESC\" >/dev/null 2>&1 &"
+    fi
+    if ! eval "$_cmd"; then
+        cli_rollback "the helper failed to start"
+        return 1
+    fi
+
+    # Step 3: verify. "Applied without a watcher" must not exist.
+    _tries=0
+    while [ "$_tries" -lt "$MACON_ARM_TRIES" ]; do
+        if sess_helper_alive; then break; fi
+        sleep 0.1 2>/dev/null || sleep 1
+        _tries=$((_tries + 1))
+    done
+
+    if ! sess_helper_alive; then
+        cli_rollback "no live helper appeared"
+        cli_remove_run_files "$(sess_pid_path)"
+        return 1
+    fi
+
+    if ! plat_sleep_disabled; then
+        cli_rollback "disablesleep did not take effect"
+        return 1
+    fi
+
+    return 0
+}
+
+# Writes one descriptor field, fatally. sess_set refuses values it cannot
+# represent, and most of these fields are optional -- so an unchecked write is
+# a field that is silently absent, and absence is exactly what sess_validate
+# cannot object to. A session that cannot be described is a session that does
+# not start.
+cli_desc_set() {
+    sess_set "$1" "$2" "$3" ||
+        macon_die "could not record '$2' in the session descriptor"
+}
+
+# The hand-over file. It is built where the calling user can write -- /var/run
+# is root-owned -- and it is a DIFFERENT path from the helper's own copy on
+# purpose: source and destination being the same file would make the helper's
+# validate-then-copy a self-copy, and the tamper resistance it exists for
+# (the user cannot move the ceiling once the session is running) would be
+# bought with nothing.
+cli_new_desc_path() {
+    printf '%s/macon-session.%s.conf\n' "${TMPDIR:-/tmp}" "$$"
+}
+
+cli_cmd_on() {
+    cli_check_environment
+    cli_parse_on "$@" || exit 1
+
+    if sess_helper_alive; then
+        macon_die "a session is already active; run 'macon off' first"
+    fi
+
+    if sess_orphaned; then
+        macon_warn "healing an orphaned session before arming"
+        cli_heal_orphan
+    fi
+
+    if [ "$(plat_power_source)" != "ac" ] && [ "$OPT_FORCE" -eq 0 ]; then
+        macon_die "not on AC power; lid closed with sleep disabled and no AC is the worst case this tool can produce (use --force to override)"
+    fi
+
+    if [ ! -f "$MACON_FS_PLIST" ] && [ "$OPT_NO_FAILSAFE" -eq 0 ]; then
+        macon_die "the boot failsafe is not installed; run 'macon failsafe install' (or pass --no-failsafe)"
+    fi
+
+    if ! snap_exists; then
+        if ! snap_save; then
+            macon_die "no snapshot exists and the machine already looks modified; restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
+        fi
+        printf 'saved original power state to %s\n' "$(snap_path)"
+        printf 'plist backup in %s\n' "$(snap_backup_plists)"
+    fi
+
+    _id=$(macon_new_session_id)
+    _now=$(macon_now)
+    _d=$(cli_new_desc_path)
+    # Created empty and tightened BEFORE anything is written into it: the
+    # descriptor names the hooks and the busy-check, which are commands.
+    : > "$_d" || macon_die "could not write a session descriptor in ${TMPDIR:-/tmp}"
+    chmod 0600 "$_d" 2>/dev/null || :
+
+    cli_desc_set "$_d" session_id "$_id"
+    cli_desc_set "$_d" started_at "$_now"
+    cli_desc_set "$_d" soft_deadline $((_now + OPT_HOURS * 3600))
+    cli_desc_set "$_d" hard_ceiling $((_now + OPT_MAX * 3600))
+    cli_desc_set "$_d" policy "$OPT_POLICY"
+    cli_desc_set "$_d" extend_by $((OPT_EXTEND_BY * 60))
+    cli_desc_set "$_d" pre_warn $((OPT_PRE_WARN * 60))
+    cli_desc_set "$_d" interval "$OPT_INTERVAL"
+    cli_desc_set "$_d" strikes 2
+    cli_desc_set "$_d" user "$(id -un)"
+    cli_desc_set "$_d" hook_end "$OPT_HOOK_END"
+    cli_desc_set "$_d" hook_warn "$OPT_HOOK_WARN"
+    cli_desc_set "$_d" busy_timeout 30
+
+    if [ -n "$OPT_BUSY_CHECK" ]; then
+        cli_desc_set "$_d" completion busy_check
+        cli_desc_set "$_d" busy_check "$OPT_BUSY_CHECK"
+    elif [ "$OPT_SENTINEL" -eq 1 ]; then
+        cli_desc_set "$_d" completion sentinel
+        cli_desc_set "$_d" sentinel_path "${MACON_STATE:-$HOME/.local/state/macon}/$_id.done"
+    else
+        cli_desc_set "$_d" completion none
+    fi
+
+    sess_validate "$_d" || macon_die "internal error: built an invalid session descriptor"
+
+    _soft=$(sess_get "$_d" soft_deadline)
+    _hard=$(sess_get "$_d" hard_ceiling)
+    _sentinel=$(sess_get "$_d" sentinel_path)
+
+    if ! cli_arm "$_d"; then
+        rm -f "$_d"
+        exit 1
+    fi
+    # The helper works from its own copy from here on, so this one is not just
+    # redundant, it is a second copy of the session's commands sitting in a
+    # temporary directory.
+    rm -f "$_d"
+
+    if [ "$OPT_SENTINEL" -eq 1 ]; then
+        printf 'sentinel: %s\n' "$_sentinel"
+        printf 'write that file when the work is done and macon will restore and sleep.\n'
+    fi
+    printf 'armed until %s (ceiling %s)\n' \
+        "$(date -r "$_soft" '+%H:%M')" \
+        "$(date -r "$_hard" '+%H:%M')"
+    printf 'safe to close the lid.\n'
+}
+
 if [ -z "${MACON_CLI_SOURCED:-}" ]; then
     case "${1:-}" in
+        on) shift; cli_cmd_on "$@" ;;
         version) printf 'macon %s\n' "$MACON_VERSION" ;;
         help | --help | -h | '') cli_usage ;;
         *) cli_check_environment; macon_die "subcommand '$1' is not implemented yet" ;;
