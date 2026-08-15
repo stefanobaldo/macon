@@ -38,6 +38,8 @@ if [ -z "${MACON_CLI_SOURCED:-}" ]; then
     . "$MACON_LIB/snapshot.sh"
     # shellcheck source=lib/records.sh
     . "$MACON_LIB/records.sh"
+    # shellcheck source=lib/report.sh
+    . "$MACON_LIB/report.sh"
 fi
 
 # A plain decimal integer, bounded at both ends and with no leading zeros.
@@ -91,7 +93,8 @@ usage:
                                   keep it awake while <cmd> runs
   macon off                       restore power configuration now
   macon status                    show the current state
-  macon report [--out FILE]       render an HTML report of past sessions
+  macon report [--out FILE] [--since DATE] [--session ID]
+                                  render an HTML report of past sessions
   macon saved                     show the stored power snapshot
   macon log [--session ID]        show a session's raw samples
   macon failsafe {install|remove|status}
@@ -665,6 +668,56 @@ cli_cmd_log() {
     cat "$_p"
 }
 
+# Picks the document. Split out of the parser so that the same call can be made
+# once, either to stdout or into a file, without the redirection being written
+# twice.
+cli_report_render() {
+    if [ -n "$1" ]; then
+        rep_session_html "$1"
+    else
+        rep_html "$2"
+    fi
+}
+
+# The read-only half of the tool: it renders what past sessions recorded and
+# mutates nothing -- no power settings, no run directory, not even the records.
+cli_cmd_report() {
+    _out=""
+    _since=0
+    _sid=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --out)     cli_need_arg "$@" || exit 1; _out=$2; shift 2 ;;
+            --since)   cli_need_arg "$@" || exit 1; _since=$2; shift 2 ;;
+            --session) cli_need_arg "$@" || exit 1; _sid=$2; shift 2 ;;
+            *)         macon_die "unknown option: $1" ;;
+        esac
+    done
+
+    _epoch=$(rep_since_epoch "$_since") ||
+        macon_die "--since takes a date (YYYY-MM-DD) or a Unix epoch: '$_since'"
+
+    # The id becomes a path, and this one was typed on the command line. Checked
+    # HERE rather than left to rep_session_html: with --out, the redirection
+    # truncates the destination before the renderer runs, so a refusal down
+    # there costs the user the report that was already in the file.
+    if [ -n "$_sid" ]; then
+        rec_samples_path "$_sid" >/dev/null ||
+            macon_die "'$_sid' is not a usable session id"
+        # A flag the user typed and macon then ignored is worse than a refusal.
+        [ "$_since" = "0" ] ||
+            macon_warn "ignoring --since: --session renders one session's samples"
+    fi
+
+    if [ -n "$_out" ]; then
+        cli_report_render "$_sid" "$_epoch" > "$_out" ||
+            macon_die "could not write the report to $_out"
+        printf 'report written to %s\n' "$_out"
+    else
+        cli_report_render "$_sid" "$_epoch"
+    fi
+}
+
 # Where this user's snapshot and records live. The same expression the library
 # modules default to, restated here because the CLI needs the value itself --
 # to name it in the LaunchDaemon's environment.
@@ -908,6 +961,7 @@ if [ -z "${MACON_CLI_SOURCED:-}" ]; then
         off) cli_cmd_off ;;
         status) cli_cmd_status ;;
         saved) cli_cmd_saved ;;
+        report) shift; cli_cmd_report "$@" ;;
         log) shift; cli_cmd_log "$@" ;;
         version) printf 'macon %s\n' "$MACON_VERSION" ;;
         help | --help | -h | '') cli_usage ;;
