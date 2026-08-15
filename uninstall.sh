@@ -33,6 +33,21 @@ uninstall_run_dir() {
 # root account's, so the snapshot check below would look in a directory that
 # never holds one and report a modified machine as safe to strand.
 uninstall_check_not_root() {
+    # Guarded before the comparison, and it fails CLOSED: `[ "" -eq 0 ]` errors
+    # and exits 2 rather than returning false, so an unreadable uid would take
+    # the `|| return 0` branch and allow exactly what this refuses. An empty
+    # $(id -u) is what a sanitised PATH produces. 10 digits is the whole range
+    # of a 32-bit uid_t.
+    case "$1" in
+        '' | *[!0-9]*)
+            printf 'macon: could not read the current user id; refusing to uninstall\n' >&2
+            return 1
+            ;;
+    esac
+    if [ "${#1}" -gt 10 ]; then
+        printf 'macon: could not read the current user id; refusing to uninstall\n' >&2
+        return 1
+    fi
     [ "$1" -eq 0 ] || return 0
     printf 'macon: do not run the uninstaller as root.\n' >&2
     printf 'macon: it runs sudo for the steps that need root, and it has to read\n' >&2
@@ -110,6 +125,37 @@ uninstall_explain_blockers() {
     return 0
 }
 
+# The prefix reaches `sudo rm -rf` below. A relative one deletes nothing under
+# the prefix -- but the LaunchDaemon removal that runs first is absolute, so
+# the script would strip the real boot failsafe off the machine, leave the real
+# installation in place, and report success.
+uninstall_check_prefix() {
+    case "$1" in
+        /*) return 0 ;;
+    esac
+    printf 'macon: the install prefix must be an absolute path: %s\n' "$1" >&2
+    return 1
+}
+
+uninstall_failsafe_present() {
+    [ -f "$MACON_FS_PLIST" ]
+}
+
+# Reached when the plist is still there after everything that should have
+# removed it. Removing the components now is the one thing that must not
+# happen: it leaves a RunAtLoad root job pointing at a deleted program, an
+# error at every boot, and no macon left to take it out.
+uninstall_explain_stuck_failsafe() {
+    printf 'macon: the boot failsafe could not be removed:\n' >&2
+    printf 'macon:   %s\n' "$MACON_FS_PLIST" >&2
+    printf 'macon: nothing else was removed -- deleting the components now would\n' >&2
+    printf 'macon: leave a boot job pointing at a program that is gone.\n' >&2
+    printf 'macon: remove it by hand, then run this again:\n' >&2
+    printf 'macon:   sudo launchctl bootout system %s\n' "$MACON_FS_PLIST" >&2
+    printf 'macon:   sudo rm -f %s\n' "$MACON_FS_PLIST" >&2
+    return 0
+}
+
 uninstall_state_note() {
     printf 'Your session records and power snapshot were left in place:\n'
     printf '  %s\n' "$(uninstall_state_dir)"
@@ -129,6 +175,7 @@ if [ -z "${MACON_UNINSTALL_SOURCED:-}" ]; then
     esac
 
     uninstall_check_not_root "$(id -u)" "${SUDO_USER:-}" || exit 1
+    uninstall_check_prefix "$MACON_PREFIX" || exit 1
 
     _blockers=$(uninstall_blockers)
     if [ -n "$_blockers" ]; then
@@ -148,13 +195,23 @@ if [ -z "${MACON_UNINSTALL_SOURCED:-}" ]; then
         MACON_LIB="$MACON_PREFIX/libexec/macon/lib" \
             MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
             "$MACON_PREFIX/bin/macon" failsafe remove || :
-    else
-        # No CLI to ask, so the LaunchDaemon is unloaded here. It must go
-        # either way: a boot job pointing at a failsafe that is no longer
-        # installed is a launchd error at every boot, forever.
+    fi
+
+    # The result is checked, not the attempt. `macon failsafe remove` exits 0
+    # whether or not the plist actually went, and the CLI above may not have
+    # run at all -- it dies sourcing its libraries if any of them are missing,
+    # which is precisely the half-broken installation someone reaches for the
+    # uninstaller to clean up. So the direct removal is not an else-branch: it
+    # runs whenever the file is still there.
+    if uninstall_failsafe_present; then
         sudo launchctl bootout system "$MACON_FS_PLIST" 2>/dev/null ||
             sudo launchctl unload -w "$MACON_FS_PLIST" 2>/dev/null || :
         sudo rm -f "$MACON_FS_PLIST"
+    fi
+
+    if uninstall_failsafe_present; then
+        uninstall_explain_stuck_failsafe
+        exit 1
     fi
 
     printf 'removing %s/bin/macon and %s/libexec/macon...\n' \
