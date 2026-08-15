@@ -74,6 +74,15 @@ plat_launchctl() {
     launchctl "$@"
 }
 
+# Is PID a live process whose command matches PATTERN? Both halves matter.
+# Liveness alone is not enough: ${MACON_RUN} is cleared at boot so a recorded
+# PID cannot survive a reboot, but within one uptime the kernel will happily
+# hand that number to an unrelated process. Matching the command is the only
+# thing that tells "our helper" apart from "whoever inherited its PID".
+plat_process_matches() {
+    ps -o command= -p "$1" 2>/dev/null | grep -q "$2"
+}
+
 # Copies the PowerManagement preference plists into DEST. Returns non-zero
 # when nothing landed: /bin/sh passes an unmatched glob through literally, so
 # a bare `cp <glob>` cannot be trusted to have produced anything. Count what
