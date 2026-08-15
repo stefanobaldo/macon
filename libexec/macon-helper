@@ -1,0 +1,393 @@
+#!/bin/sh
+# Root helper. Fixed, installed code -- never generated at runtime.
+#
+# It reads a validated descriptor and acts on data only. Commands supplied
+# by the user (--busy-check, hooks) are executed de-privileged as the
+# invoking user, which is required for correctness as much as for safety:
+# root cannot reach the user's tmux socket, and would silently observe
+# nothing.
+set -u
+
+MACON_LIB=${MACON_LIB:-/usr/local/libexec/macon/lib}
+
+if [ -z "${MACON_HELPER_SOURCED:-}" ]; then
+    # shellcheck source=lib/common.sh
+    . "$MACON_LIB/common.sh"
+    # shellcheck source=lib/platform.sh
+    . "$MACON_LIB/platform.sh"
+    # shellcheck source=lib/decide.sh
+    . "$MACON_LIB/decide.sh"
+    # shellcheck source=lib/session.sh
+    . "$MACON_LIB/session.sh"
+    # shellcheck source=lib/snapshot.sh
+    . "$MACON_LIB/snapshot.sh"
+    # shellcheck source=lib/records.sh
+    . "$MACON_LIB/records.sh"
+fi
+
+# powermetrics is the only sampler that can block, and it runs as root at
+# every poll. Bounded well under the 30s interval floor; a normal reading
+# takes a fraction of a second.
+MACON_THERMAL_TIMEOUT=20
+
+# Hooks are user code. Spec 9.2: their failure is ignored and execution
+# continues, so the only thing this bound protects is the loop itself.
+MACON_HOOK_TIMEOUT=30
+
+_HELPER_TAB=$(printf '\t')
+
+# Consecutive polls seen off AC. It cannot be a shell variable: the loop reads
+# each poll's decision through a command substitution, and a subshell's
+# increments are discarded when it exits -- a counter kept in memory would
+# reset to zero at every poll and the no-ac abort would never fire. The run
+# directory is cleared at boot, so this cannot outlive the session either.
+helper_offac_path() {
+    printf '%s/offac\n' "$(sess_run_dir)"
+}
+
+_helper_offac_read() {
+    _v=$(cat "$(helper_offac_path)" 2>/dev/null)
+    _sess_is_number "$_v" || _v=0
+    printf '%s\n' "$_v"
+}
+
+# An absolute path with nothing in it that can forge a descriptor line.
+# Absolute because the helper's working directory is not the user's, so a
+# relative path silently resolves somewhere else -- for the sentinel that
+# means a session that can never observe its own completion.
+_helper_is_abs_path() {
+    case "$1" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *"$_HELPER_TAB"* | *'
+'*) return 1 ;;
+    esac
+    return 0
+}
+
+# Reads the thermal level under a bound, via a FILE rather than a pipe.
+#
+# macon_run_timeout can only signal the process it started. plat_thermal_pressure
+# runs powermetrics in a child of that process, so a hung sampler outlives the
+# kill -- and if its output were being collected up a command-substitution pipe,
+# the orphan would hold that pipe open and the poll would block for exactly as
+# long as the sampler hung. The timeout would then be decorative on the one call
+# it exists to bound. Writing to a file decouples the two: the reader gets
+# whatever landed and moves on, and an orphan that writes later writes into a
+# file nobody is waiting on.
+_helper_sample_thermal() {
+    _tf="$(sess_run_dir)/thermal.$$"
+    : > "$_tf" 2>/dev/null || return 0
+    macon_run_timeout "$MACON_THERMAL_TIMEOUT" plat_thermal_pressure \
+        > "$_tf" 2>/dev/null
+    cat "$_tf" 2>/dev/null
+    rm -f "$_tf"
+}
+
+# Must root drop privilege before running this command? The answer is yes
+# whenever the answer is not certainly no, and it is certainly no in exactly
+# one case: this process is not root and is already the user the command was
+# written by. Nothing else is a shortcut worth taking -- a wrong answer here
+# runs user code as root and leaves no trace that it did.
+#
+# Split out as a pure function because the interesting case cannot be
+# exercised by a test suite that does not run as root.
+helper_needs_sudo() {
+    _uid=$1
+    _me=$2
+    _target=$3
+    [ "$_uid" = "0" ] && return 0
+    [ "$_me" = "$_target" ] && return 1
+    return 0
+}
+
+# Runs a user-supplied command as the invoking user, never as root.
+helper_run_as_user() {
+    _user=$1
+    _timeout=$2
+    _cmd=$3
+    if helper_needs_sudo "$(id -u)" "$(id -un)" "$_user"; then
+        macon_run_timeout "$_timeout" sudo -u "$_user" -- /bin/sh -c "$_cmd"
+    else
+        macon_run_timeout "$_timeout" /bin/sh -c "$_cmd"
+    fi
+}
+
+# sess_validate covers the nine fields it was written against. These are the
+# rest: the ones that become a sleep(1) argument, a kill(1) operand, an
+# arithmetic operand or a path tested as root. Each is required only when the
+# descriptor selects the feature that reads it, so a session that uses none of
+# them carries none of them.
+#
+# The numeric guard is deliberately session.sh's own rather than a local copy:
+# its bounds are load-bearing (an over-long value makes `[` exit 2, and the
+# enclosing `if` then falls through instead of failing), and a second copy is
+# a second place for those bounds to drift.
+helper_validate_desc() {
+    _d=$1
+    sess_validate "$_d" || return 1
+    _ok=0
+
+    if [ "$(sess_get "$_d" policy)" = "extend" ]; then
+        _v=$(sess_get "$_d" extend_by)
+        if ! _sess_is_number "$_v"; then
+            macon_warn "policy is extend but 'extend_by' is not a plain integer: '$_v'"
+            _ok=1
+        fi
+    fi
+
+    case "$(sess_get "$_d" completion)" in
+        busy_check)
+            if [ -z "$(sess_get "$_d" busy_check)" ]; then
+                macon_warn "completion is busy_check but 'busy_check' is empty"
+                _ok=1
+            fi
+            _v=$(sess_get "$_d" busy_timeout)
+            if ! _sess_is_number "$_v"; then
+                macon_warn "descriptor field 'busy_timeout' is not a plain integer: '$_v'"
+                _ok=1
+            fi
+            ;;
+        sentinel)
+            _v=$(sess_get "$_d" sentinel_path)
+            if ! _helper_is_abs_path "$_v"; then
+                macon_warn "descriptor field 'sentinel_path' is not an absolute path: '$_v'"
+                _ok=1
+            fi
+            ;;
+        process)
+            _v=$(sess_get "$_d" watch_pid)
+            if ! _sess_is_number "$_v"; then
+                macon_warn "descriptor field 'watch_pid' is not a plain integer: '$_v'"
+                _ok=1
+            fi
+            ;;
+    esac
+
+    if [ -n "$(sess_get "$_d" hook_warn)" ]; then
+        _v=$(sess_get "$_d" pre_warn)
+        if ! _sess_is_number "$_v"; then
+            macon_warn "a warn hook is set but 'pre_warn' is not a plain integer: '$_v'"
+            _ok=1
+        fi
+    fi
+
+    [ "$_ok" -eq 0 ]
+}
+
+# Spec 6.1 rule 3: the descriptor arrives in a user-owned file; the helper
+# validates it and afterwards works only from its own copy, so the ceiling
+# cannot be moved once the session has started.
+helper_install_descriptor() {
+    _src=$1
+    _dst=$(sess_desc_path)
+    mkdir -p "$(sess_run_dir)" || return 1
+
+    if [ "$_src" = "$_dst" ]; then
+        helper_validate_desc "$_dst" || return 1
+    else
+        _tmp="$_dst.tmp.$$"
+        cp "$_src" "$_tmp" || return 1
+        # Validate the COPY. Validating the original and then copying leaves a
+        # window in which the file is rewritten between the two, and the
+        # ceiling is precisely the field that would be rewritten.
+        if ! helper_validate_desc "$_tmp"; then
+            rm -f "$_tmp"
+            return 1
+        fi
+        mv "$_tmp" "$_dst" || return 1
+    fi
+
+    # Root-owned, world-readable: `macon status` reads it, only root writes it.
+    # Best effort, because a helper that is somehow not root should still run a
+    # correct session -- it just cannot promise the file is untamperable.
+    chmod 0644 "$_dst" 2>/dev/null || :
+    chown 0:0 "$_dst" 2>/dev/null || :
+    return 0
+}
+
+# Echoes yes | no | unknown.
+helper_probe_busy() {
+    _d=$1
+    case "$(sess_get "$_d" completion)" in
+        sentinel)
+            if [ -e "$(sess_get "$_d" sentinel_path)" ]; then
+                printf 'no\n'
+            else
+                printf 'yes\n'
+            fi
+            ;;
+        process)
+            # kill -0 answers "does this process exist", not "is it still the
+            # one we wrapped": within one uptime the number can be recycled.
+            # The ceiling is what bounds the damage; see spec 7.1.
+            _pid=$(sess_get "$_d" watch_pid)
+            if _sess_is_number "$_pid" && kill -0 "$_pid" 2>/dev/null; then
+                printf 'yes\n'
+            else
+                printf 'no\n'
+            fi
+            ;;
+        busy_check)
+            _to=$(sess_get "$_d" busy_timeout)
+            _sess_is_number "$_to" || _to=$MACON_HOOK_TIMEOUT
+            if helper_run_as_user "$(sess_get "$_d" user)" "$_to" \
+                "$(sess_get "$_d" busy_check)" >/dev/null 2>&1; then
+                printf 'yes\n'
+            else
+                # Includes the timeout kill (143). Failing toward "not busy"
+                # is deliberate: it fails toward letting the machine sleep.
+                printf 'no\n'
+            fi
+            ;;
+        *)
+            # none, and anything unrecognised. Never "finished": an
+            # unreadable completion source must not end a session early.
+            printf 'unknown\n'
+            ;;
+    esac
+}
+
+# One poll: sample, evaluate, echo the decision.
+helper_iterate() {
+    _d=$1
+    _now=$(macon_now)
+    _id=$(sess_get "$_d" session_id)
+
+    _thermal=$(_helper_sample_thermal)
+    # powermetrics returns the remainder of its own line, so this text is not
+    # ours. A tab or newline in it does not corrupt the value, it corrupts the
+    # sample file -- and rec_append_sample refuses such a value outright, which
+    # would cost the whole poll its battery reading and its place in the count.
+    # Degrade the one field instead.
+    case "$_thermal" in
+        '' | *"$_HELPER_TAB"* | *'
+'*) _thermal=unknown ;;
+    esac
+
+    _batt=$(plat_battery_pct)
+    # A Mac with no battery, or an unreadable one, reads empty. -1 is the
+    # sentinel rec_aggregate already uses for "no usable reading", and keeps
+    # the column unambiguously non-blank: an empty field in a TSV row is
+    # indistinguishable from a shifted one.
+    _sess_is_number "$_batt" || _batt=-1
+
+    if [ "$(plat_power_source)" = "ac" ]; then
+        _ac=yes
+        _offac=0
+    else
+        _ac=no
+        _offac=$(( $(_helper_offac_read) + 1 ))
+    fi
+    printf '%s\n' "$_offac" > "$(helper_offac_path)"
+
+    rec_append_sample "$_id" "$_now" "$_thermal" "$_ac" "$_batt" ||
+        macon_warn "could not record a sample for session '$_id'"
+    printf '%s\n' "$_now" > "$(sess_heartbeat_path)"
+
+    macon_decide \
+        "$_now" \
+        "$(sess_get "$_d" hard_ceiling)" \
+        "$(sess_get "$_d" soft_deadline)" \
+        "$(sess_get "$_d" policy)" \
+        "$(helper_probe_busy "$_d")" \
+        "$_offac" \
+        "$(sess_get "$_d" strikes)"
+}
+
+helper_finish() {
+    _d=$1
+    _reason=$2
+    _id=$(sess_get "$_d" session_id)
+
+    # Restore FIRST. A hung or broken hook must never be able to delay the
+    # safety action (spec 9.3), and neither must a bookkeeping failure.
+    if ! snap_restore; then
+        macon_warn "restore reported a failure while ending the session ($_reason)"
+    fi
+
+    # rec_aggregate has two outcomes and they are told apart by exit status,
+    # not by output: a refused id prints nothing at all. Cutting four fields
+    # out of that silence rebuilds exactly the half-empty index row the
+    # aggregate's sentinel exists to prevent.
+    if _agg=$(rec_aggregate "$_id"); then
+        rec_append_session "$_id" \
+            "$(sess_get "$_d" started_at)" "$(macon_now)" "$_reason" \
+            "$(printf '%s' "$_agg" | cut -f1)" \
+            "$(printf '%s' "$_agg" | cut -f2)" \
+            "$(printf '%s' "$_agg" | cut -f3)" \
+            "$(printf '%s' "$_agg" | cut -f4)" ||
+            macon_warn "session '$_id' ended ($_reason) but was not recorded"
+    else
+        macon_warn "session '$_id' ended ($_reason) but its id is not usable as a record key"
+    fi
+
+    _hook=$(sess_get "$_d" hook_end)
+    if [ -n "$_hook" ]; then
+        # The reason is exported into the hook's own shell rather than
+        # prefixed onto it: a prefix applies to the first command of the hook
+        # only, and a hook is as likely to be a pipeline or a list as a single
+        # command. The value is one of macon_decide's fixed literals.
+        helper_run_as_user "$(sess_get "$_d" user)" "$MACON_HOOK_TIMEOUT" \
+            "MACON_REASON=$_reason; export MACON_REASON; $_hook" >/dev/null 2>&1 || :
+    fi
+
+    rm -f "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
+        "$(helper_offac_path)"
+}
+
+# The pause between polls, named rather than inlined so the suite can drive the
+# loop at its own cadence. Stubbing sleep(1) itself would also silence
+# macon_run_timeout's killer, which is the one thing in the loop that must keep
+# working while the loop is under test.
+helper_wait() {
+    sleep "$1"
+}
+
+helper_loop() {
+    _d=$1
+    _warned=0
+    while :; do
+        _decision=$(helper_iterate "$_d")
+        case "$_decision" in
+            continue)
+                _hook=$(sess_get "$_d" hook_warn)
+                _pw=$(sess_get "$_d" pre_warn)
+                if [ "$_warned" -eq 0 ] && [ -n "$_hook" ] && [ -n "$_pw" ] &&
+                    [ "$(macon_now)" -ge $(( $(sess_get "$_d" soft_deadline) - _pw )) ]; then
+                    _warned=1
+                    helper_run_as_user "$(sess_get "$_d" user)" \
+                        "$MACON_HOOK_TIMEOUT" "$_hook" >/dev/null 2>&1 || :
+                fi
+                ;;
+            extend)
+                _new=$(( $(sess_get "$_d" soft_deadline) + $(sess_get "$_d" extend_by) ))
+                _ceil=$(sess_get "$_d" hard_ceiling)
+                [ "$_new" -gt "$_ceil" ] && _new=$_ceil
+                sess_set "$_d" soft_deadline "$_new"
+                _warned=0
+                ;;
+            end:*)
+                helper_finish "$_d" "${_decision#end:}"
+                return 0
+                ;;
+        esac
+        helper_wait "$(sess_get "$_d" interval)"
+    done
+}
+
+if [ -z "${MACON_HELPER_SOURCED:-}" ]; then
+    case "${1:-}" in
+        start)
+            [ -n "${2:-}" ] || macon_die "usage: macon-helper start DESCRIPTOR"
+            helper_install_descriptor "$2" || macon_die "invalid session descriptor"
+            printf '%s\n' "$$" > "$(sess_pid_path)"
+            helper_loop "$(sess_desc_path)"
+            ;;
+        *)
+            macon_die "usage: macon-helper start DESCRIPTOR"
+            ;;
+    esac
+fi
