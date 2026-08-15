@@ -624,9 +624,99 @@ cli_cmd_log() {
     cat "$_p"
 }
 
+# Where this user's snapshot and records live. The same expression the library
+# modules default to, restated here because the CLI needs the value itself --
+# to name it in the LaunchDaemon's environment.
+cli_state_dir() {
+    printf '%s\n' "${MACON_STATE:-$HOME/.local/state/macon}"
+}
+
+# XML text, not markup: a path is data, and an unescaped & or < makes the plist
+# unparseable. launchd's response to a plist it cannot parse is to not run the
+# job -- which for this job means no boot restore at all, discovered on the
+# morning it was needed.
+cli_xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Renders the LaunchDaemon. PROGRAM is the failsafe; STATE_DIR, when given, is
+# written into the job's environment.
+#
+# That second argument is what makes the boot restore deterministic. launchd
+# starts a system daemon with no user context, so the snapshot's default
+# location -- under the invoking user's home -- resolves to nothing. The
+# failsafe can search for a snapshot itself, but on a multi-user Mac that
+# search picks the most recently written one, which is a guess. Naming the
+# directory at install time leaves the search as the safety net it was meant
+# to be.
+cli_failsafe_plist() {
+    _prog=$(cli_xml_escape "$1")
+    _state=${2:-}
+    _env=""
+    if [ -n "$_state" ]; then
+        _env=$(printf '  <key>EnvironmentVariables</key>\n  <dict><key>MACON_STATE</key><string>%s</string></dict>' \
+            "$(cli_xml_escape "$_state")")
+    fi
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.macon.failsafe</string>
+  <key>RunAtLoad</key><true/>
+  <key>ProgramArguments</key>
+  <array><string>$_prog</string></array>
+${_env}
+</dict>
+</plist>
+PLIST
+}
+
+# The plist this machine should have: the installed failsafe, and the state
+# directory of the user installing it. Separate from the install verb so what
+# would be written can be asserted without a test suite that registers a
+# boot-time root daemon.
+cli_failsafe_plist_for_install() {
+    cli_failsafe_plist "$MACON_LIBEXEC/failsafe.sh" "$(cli_state_dir)"
+}
+
+cli_cmd_failsafe() {
+    case "${1:-status}" in
+        install)
+            cli_failsafe_plist_for_install | sudo tee "$MACON_FS_PLIST" >/dev/null
+            sudo chown root:wheel "$MACON_FS_PLIST"
+            sudo chmod 644 "$MACON_FS_PLIST"
+            # bootstrap is the modern verb and load -w the one macOS 13 may
+            # still want; both are tried because a failsafe that is written to
+            # disk but never loaded only starts working after the next boot --
+            # and the next boot is exactly what it exists for.
+            sudo launchctl bootstrap system "$MACON_FS_PLIST" 2>/dev/null ||
+                sudo launchctl load -w "$MACON_FS_PLIST" 2>/dev/null || :
+            printf 'boot failsafe installed.\n'
+            ;;
+        remove)
+            sudo launchctl bootout system "$MACON_FS_PLIST" 2>/dev/null ||
+                sudo launchctl unload -w "$MACON_FS_PLIST" 2>/dev/null || :
+            sudo rm -f "$MACON_FS_PLIST"
+            printf 'boot failsafe removed.\n'
+            ;;
+        status)
+            if [ -f "$MACON_FS_PLIST" ]; then
+                printf 'installed: %s\n' "$MACON_FS_PLIST"
+            else
+                printf 'absent\n'
+            fi
+            ;;
+        *)
+            macon_die "usage: macon failsafe {install|remove|status}"
+            ;;
+    esac
+}
+
 if [ -z "${MACON_CLI_SOURCED:-}" ]; then
     case "${1:-}" in
         on) shift; cli_cmd_on "$@" ;;
+        failsafe) shift; cli_cmd_failsafe "$@" ;;
         off) cli_cmd_off ;;
         status) cli_cmd_status ;;
         saved) cli_cmd_saved ;;
