@@ -73,3 +73,20 @@ plat_boot_time() {
 plat_launchctl() {
     launchctl "$@"
 }
+
+# Copies the PowerManagement preference plists into DEST. Returns non-zero
+# when nothing landed: /bin/sh passes an unmatched glob through literally, so
+# a bare `cp <glob>` cannot be trusted to have produced anything. Count what
+# actually copied instead — the caller uses this to know whether the forensic
+# defence really ran.
+plat_backup_pmprefs() {
+    _dest=$1
+    _copied=0
+    for _f in /Library/Preferences/com.apple.PowerManagement*.plist; do
+        [ -f "$_f" ] || continue
+        if cp "$_f" "$_dest"/ 2>/dev/null; then
+            _copied=$((_copied + 1))
+        fi
+    done
+    [ "$_copied" -gt 0 ]
+}
