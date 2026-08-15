@@ -46,6 +46,20 @@ assert_contains "$OUT" "2023-11-14 22:13" "start times are formatted, not left a
 assert_contains "$OUT" "2h46m" "the duration is derived from the two epochs"
 assert_contains "$OUT" "80%" "the minimum battery level is shown"
 
+# The instant the worst level was reached is a column of its own -- the spec
+# lists it beside the level itself. Header and cell are asserted separately, and
+# then counted against each other: a table whose body no longer lines up with
+# its head is exactly what a column with no test ships, and neither assertion
+# alone would catch half of it being removed.
+assert_contains "$OUT" "<th>Worst at</th>" "the worst-at column has a header"
+assert_contains "$OUT" '<td class="ok">Nominal</td><td>22:23</td><td>80%</td>' \
+    "and a cell, between the level it belongs to and the battery"
+ROW=$(printf '%s\n' "$OUT" | grep '20260815T000000Z-aaaa')
+assert_eq "8" "$(printf '%s' "$ROW" | grep -o '<td' | wc -l | tr -d ' ')" \
+    "an index row carries eight cells"
+assert_eq "8" "$(printf '%s\n' "$OUT" | grep -o '<th>' | wc -l | tr -d ' ')" \
+    "and the head carries eight columns to put them in"
+
 # awk on macOS has no strftime -- it is a gawk extension, and calling it aborts
 # the whole program. A row that still carries its raw epoch is what that failure
 # looks like from here.
@@ -100,6 +114,32 @@ assert_contains "$OUT" "Serious &lt;b&gt;&amp;x" "markup characters are escaped"
 assert_fail "the raw markup does not reach the document" \
     sh -c "printf '%s' \"\$1\" | grep -q '<b>'" _ "$OUT"
 
+# --- _rep_is_num --------------------------------------------------------------
+#
+# It is the only thing standing between a record field and `$(( ))`. A leading
+# zero there is not a wrong answer, it is a FATAL arithmetic error -- $(( ))
+# reads `08` as octal, and `08` is not valid octal at all.
+
+assert_ok "a plain integer is a number" _rep_is_num 1700000000
+assert_ok "zero is a number" _rep_is_num 0
+assert_fail "an empty value is not" _rep_is_num ""
+assert_fail "a negative value is not" _rep_is_num -1
+assert_fail "a leading zero is refused: arithmetic would read it as octal" _rep_is_num 08
+assert_fail "a value too long for intmax_t is refused" _rep_is_num 1234567890123456789
+
+# End to end: a start epoch with a leading zero must cost that row its two
+# derived cells, not put a shell diagnostic on stderr.
+rec_append_session 20260820T000000Z-ffff 08 1700410000 'done' Nominal 1700400600 55 9
+ERR=$(rep_html 0 2>&1 >/dev/null)
+assert_eq "" "$ERR" "a leading-zero epoch does not blow up the arithmetic"
+OUT=$(rep_html 0)
+assert_contains "$OUT" "20260820T000000Z-ffff" "and the row is still rendered"
+ROW=$(printf '%s\n' "$OUT" | grep '20260820T000000Z-ffff')
+assert_eq "8" "$(printf '%s' "$ROW" | grep -o '<td' | wc -l | tr -d ' ')" \
+    "with all eight of its cells"
+assert_contains "$ROW" '<td class="none">&mdash;</td><td class="none">&mdash;</td>' \
+    "the unreadable start costs it the start and the duration, and nothing else"
+
 # --- rep_since_epoch ----------------------------------------------------------
 
 assert_eq "1700000000" "$(rep_since_epoch 1700000000)" "a plain integer is an epoch"
@@ -123,7 +163,18 @@ assert_contains "$OUT" "$SID" "the drill-down names its session"
 assert_contains "$OUT" "2023-11-14 22:18:20" "sample timestamps are formatted"
 assert_contains "$OUT" "Serious &lt;b&gt;" "sample values are escaped too"
 assert_contains "$OUT" "74%" "battery readings are shown"
-assert_contains "$OUT" "no" "the AC column is shown"
+# Asserted as the rendered CELL, not as the bare word: "no" and "yes" are two
+# and three characters of English that occur all over the inline stylesheet
+# ("monospace" alone contains one), so a substring match on either would hold
+# with the whole column deleted.
+assert_contains "$OUT" '<th>On AC</th>' "the AC column has a header"
+assert_contains "$OUT" '<td class="warn">no</td>' "a sample taken off AC is marked as such"
+assert_contains "$OUT" '<td class="ok">yes</td>' "and a sample on AC is not"
+ROW=$(printf '%s\n' "$OUT" | grep '22:18:20')
+assert_eq "4" "$(printf '%s' "$ROW" | grep -o '<td' | wc -l | tr -d ' ')" \
+    "a sample row carries four cells"
+assert_eq "4" "$(printf '%s\n' "$OUT" | grep -o '<th>' | wc -l | tr -d ' ')" \
+    "and the head carries four columns to put them in"
 assert_fail "an unreadable battery sample is not a -1% reading" \
     sh -c "printf '%s' \"\$1\" | grep -q '\\-1%'" _ "$OUT"
 

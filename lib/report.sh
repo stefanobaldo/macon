@@ -27,12 +27,25 @@ _rep_escape() {
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# A plain non-negative integer, bounded in length. The bound is not hygiene:
-# /bin/sh here is bash 3.2, whose arithmetic parses its operands into intmax_t
-# and exits 2 on anything larger rather than returning false.
+# A plain decimal integer, with no leading zeros and bounded in length. Neither
+# clause is hygiene, and this guard is the only thing standing between a record
+# field and `$(( ))`:
+#
+#   the LENGTH bound, because /bin/sh here is bash 3.2, whose arithmetic parses
+#   its operands into intmax_t and exits 2 on anything larger rather than
+#   returning false;
+#
+#   the LEADING ZERO, because $(( )) reads `08` as octal -- and `08` is not
+#   valid octal at all, which is a fatal arithmetic error, not a wrong answer:
+#   `value too great for base` kills the subshell computing the cell.
+#
+# cli_is_number in bin/macon and _sess_is_number in lib/session.sh carry the same
+# two clauses for the same two reasons.
 _rep_is_num() {
     case "$1" in
         '' | *[!0-9]*) return 1 ;;
+        0) return 0 ;;
+        0*) return 1 ;;
     esac
     [ "${#1}" -le 18 ]
 }
