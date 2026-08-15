@@ -23,6 +23,13 @@ _rec_warn() {
 # user-supplied argument. lib/session.sh enforces this character class on the
 # descriptor, but this module is deliberately independent of that one, so it
 # cannot inherit the guarantee -- it has to state it again.
+# Longest id accepted. This is the same bound MACON_NAME_MAX_CHARS puts on the
+# same value at the other end of the descriptor. They are two numbers rather
+# than one because this module is deliberately independent of lib/session.sh --
+# so tests/test_records.sh asserts they have not drifted apart, which is the
+# part that would otherwise rot in silence.
+MACON_REC_ID_MAX_CHARS=64
+
 _rec_is_id() {
     case "$1" in
         '' | *[!A-Za-z0-9._-]* | *..*)
@@ -30,6 +37,14 @@ _rec_is_id() {
             return 1
             ;;
     esac
+    # Not hygiene: this becomes a path component, and the length limits that
+    # apply to one are the filesystem's, which report themselves far too late
+    # to be useful -- as a failed write, as root, at the end of a night.
+    if [ "${#1}" -gt "$MACON_REC_ID_MAX_CHARS" ]; then
+        _rec_warn "refusing session id: longer than $MACON_REC_ID_MAX_CHARS characters"
+        return 1
+    fi
+    return 0
 }
 
 # A tab or a newline inside a value does not corrupt the value, it corrupts the
@@ -103,7 +118,7 @@ rec_append_session() {
 #           "$_id")` consumed without checking `$?` rebuilds precisely the empty
 #           four columns the rc-0 path exists to prevent. Narrow but real, and an
 #           asymmetry rather than a hypothetical: _sess_is_name admits `..` where
-#           _rec_is_id below does not, so an id that passes sess_validate can
+#           _rec_is_id above does not, so an id that passes sess_validate can
 #           still be refused here.
 rec_aggregate() {
     _p=$(rec_samples_path "$1") || return 1

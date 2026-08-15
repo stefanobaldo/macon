@@ -209,4 +209,22 @@ GEN=$(macon_new_session_id)
 assert_eq "$MACON_STATE/samples/$GEN.tsv" "$(rec_samples_path "$GEN")" \
     "a generated session id is admitted"
 
+# The id is length-bounded because it becomes a path component, and a limit
+# discovered by the filesystem reports itself as a failed write, as root, at the
+# end of a night.
+_long=$(printf '%065d' 0)
+assert_fail "an id longer than the cap is refused" rec_samples_path "$_long"
+_at_cap=$(printf '%064d' 0)
+assert_eq "$MACON_STATE/samples/$_at_cap.tsv" "$(rec_samples_path "$_at_cap")" \
+    "an id exactly at the cap is admitted"
+
+# This module and lib/session.sh bound the same value at opposite ends of the
+# descriptor, and are deliberately independent of each other -- which means the
+# two numbers can drift apart with nothing to notice. This is what notices.
+# session.sh is sourced last for the same reason common.sh was.
+# shellcheck source=lib/session.sh
+. "$MACON_LIB/session.sh"
+assert_eq "$MACON_NAME_MAX_CHARS" "$MACON_REC_ID_MAX_CHARS" \
+    "the two id length caps are still the same number"
+
 teardown_state
