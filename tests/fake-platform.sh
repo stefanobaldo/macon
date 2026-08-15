@@ -42,12 +42,35 @@ fake_call_count() {
     fi
 }
 
-plat_macos_major() { _v=$(fake_get macos_major); printf '%s\n' "${_v:-26}"; }
+# Returns a scripted value exactly as scripted, EMPTY INCLUDED, and falls back
+# to the default only for a key no test has touched. `${_v:-default}` cannot do
+# that, and "this reader returned nothing" is a real state for several of them:
+# a Mac with no battery, a sysctl that failed, a sw_vers that did not answer.
+# A fake that cannot express it leaves every caller's guard against it untested.
+fake_get_or() {
+    if [ -f "$FAKE_DIR/$1" ]; then
+        fake_get "$1"
+    else
+        printf '%s\n' "$2"
+    fi
+}
+
+plat_macos_major() { fake_get_or macos_major 26; }
 
 plat_pmset_read() { fake_get "$1"; }
 
+# Scripted failure: `fake_set fail_<call> 1` makes that call record itself and
+# return non-zero WITHOUT changing state, which is what a rejected pmset
+# invocation does. Rollback and keep-the-snapshot paths are unreachable
+# otherwise, and they are the paths that only run when something has gone
+# wrong -- exactly the ones worth having under test.
+_fake_should_fail() {
+    [ "$(fake_get "fail_$1")" = "1" ]
+}
+
 plat_pmset_apply_ac() {
     fake_record "pmset_apply_ac $*"
+    _fake_should_fail pmset_apply_ac && return 1
     while [ $# -ge 2 ]; do
         fake_set "$1" "$2"
         shift 2
@@ -56,28 +79,19 @@ plat_pmset_apply_ac() {
 
 plat_pmset_disablesleep() {
     fake_record "pmset_disablesleep $1"
+    _fake_should_fail pmset_disablesleep && return 1
     if [ "$1" = "1" ]; then fake_set sleep_disabled yes; else fake_set sleep_disabled no; fi
 }
 
 plat_sleep_disabled() { [ "$(fake_get sleep_disabled)" = "yes" ]; }
 
-plat_power_source() { _v=$(fake_get power_source); printf '%s\n' "${_v:-ac}"; }
+plat_power_source() { fake_get_or power_source ac; }
 
-# The only reader whose real counterpart can legitimately print NOTHING: a Mac
-# with no battery, or one whose `pmset -g batt` output does not carry a
-# percentage. `${_v:-100}` would make that state unscriptable, so the default
-# applies to an unscripted key and a scripted empty value means empty.
-plat_battery_pct() {
-    if [ -f "$FAKE_DIR/battery_pct" ]; then
-        fake_get battery_pct
-    else
-        printf '100\n'
-    fi
-}
+plat_battery_pct() { fake_get_or battery_pct 100; }
 
-plat_thermal_pressure() { _v=$(fake_get thermal); printf '%s\n' "${_v:-Nominal}"; }
+plat_thermal_pressure() { fake_get_or thermal Nominal; }
 
-plat_boot_time() { _v=$(fake_get boot_time); printf '%s\n' "${_v:-1700000000}"; }
+plat_boot_time() { fake_get_or boot_time 1700000000; }
 
 plat_launchctl() { fake_record "launchctl $*"; }
 
