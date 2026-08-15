@@ -9,7 +9,10 @@ we can talk before you write code.
 - Everything in this repository is written in English.
 - Shell is POSIX `sh` only. No bashisms, no zshisms: `/bin/bash` on macOS is
   3.2.57 and targeting it buys nothing POSIX does not already give.
-- `shellcheck -s sh -S style` must pass on every script before you push.
+- `sh tests/lint.sh` must pass before you push. It is the whole lint gate, and
+  it is exactly what CI runs — including the executables in `bin/` and
+  `libexec/`, which carry no extension and which a plain `find -name '*.sh'`
+  therefore misses.
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, `chore:`, `ci:`). One commit per coherent
   change.
@@ -30,6 +33,12 @@ that invariant before anything else.
 
 `sh tests/run.sh` runs the fake-backed suite. It never touches the machine's
 power configuration and is what CI runs.
+
+`sh tests/lint.sh` runs the lint gate. CI pins shellcheck to the version named
+in `.github/workflows/ci.yml`; findings are renamed between shellcheck releases
+(`SC2317` became `SC2329`), so a much older or newer local shellcheck can
+disagree with CI about a file neither of you changed. If a finding appears that
+you cannot reproduce, compare `shellcheck --version` with the pinned one first.
 
 `MACON_REAL_TESTS=1 sh tests/real/run.sh` runs the opt-in suite that applies and
 restores real settings. It requires macon to be installed, requires AC power, and
