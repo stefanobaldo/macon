@@ -733,23 +733,45 @@ cli_xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# Renders the LaunchDaemon. PROGRAM is the failsafe; STATE_DIR, when given, is
-# written into the job's environment.
+# One <key><string> pair for the job's environment, or nothing when the value
+# is empty. The value is XML text, not markup: see cli_xml_escape.
+cli_plist_env_entry() {
+    [ -n "$2" ] || return 0
+    printf '    <key>%s</key><string>%s</string>\n' "$1" "$(cli_xml_escape "$2")"
+}
+
+# Renders the LaunchDaemon. PROGRAM is the failsafe; STATE_DIR, LIB_DIR and
+# LIBEXEC_DIR, when given, are written into the job's environment.
 #
-# That second argument is what makes the boot restore deterministic. launchd
-# starts a system daemon with no user context, so the snapshot's default
-# location -- under the invoking user's home -- resolves to nothing. The
-# failsafe can search for a snapshot itself, but on a multi-user Mac that
-# search picks the most recently written one, which is a guess. Naming the
-# directory at install time leaves the search as the safety net it was meant
-# to be.
+# Those arguments are what makes the boot restore work at all. launchd starts a
+# system daemon with NO user context and NO inherited environment, so every
+# path the job depends on has to be stated here:
+#
+#   MACON_STATE   -- the snapshot's default location is under the invoking
+#                    user's home, which resolves to nothing for a system
+#                    daemon. The failsafe can search for a snapshot itself, but
+#                    on a multi-user Mac that search picks the most recently
+#                    written one, which is a guess. Naming the directory leaves
+#                    the search as the safety net it was meant to be.
+#   MACON_LIB     -- libexec/failsafe.sh defaults it to /usr/local, and sources
+#                    four libraries from it before it reaches its first log
+#                    line. Installed under any other prefix, an unnamed
+#                    MACON_LIB is a boot job that dies silently while `macon
+#                    status` still reports the failsafe as installed -- the
+#                    machine looks protected and is not.
+#   MACON_LIBEXEC -- for the same reason, ahead of the day the failsafe needs
+#                    to reach a sibling component.
 cli_failsafe_plist() {
     _prog=$(cli_xml_escape "$1")
-    _state=${2:-}
+    _entries=$(
+        cli_plist_env_entry MACON_STATE "${2:-}"
+        cli_plist_env_entry MACON_LIB "${3:-}"
+        cli_plist_env_entry MACON_LIBEXEC "${4:-}"
+    )
     _env=""
-    if [ -n "$_state" ]; then
-        _env=$(printf '  <key>EnvironmentVariables</key>\n  <dict><key>MACON_STATE</key><string>%s</string></dict>' \
-            "$(cli_xml_escape "$_state")")
+    if [ -n "$_entries" ]; then
+        _env=$(printf '  <key>EnvironmentVariables</key>\n  <dict>\n%s\n  </dict>' \
+            "$_entries")
     fi
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -912,12 +934,14 @@ cli_cmd_run() {
     exit "$_rc"
 }
 
-# The plist this machine should have: the installed failsafe, and the state
-# directory of the user installing it. Separate from the install verb so what
-# would be written can be asserted without a test suite that registers a
-# boot-time root daemon.
+# The plist this machine should have: the installed failsafe, the state
+# directory of the user installing it, and the library paths this CLI is
+# itself using -- which are the installed ones, since `install.sh` sets both
+# when it calls this. Separate from the install verb so what would be written
+# can be asserted without a test suite that registers a boot-time root daemon.
 cli_failsafe_plist_for_install() {
-    cli_failsafe_plist "$MACON_LIBEXEC/failsafe.sh" "$(cli_state_dir)"
+    cli_failsafe_plist "$MACON_LIBEXEC/failsafe.sh" "$(cli_state_dir)" \
+        "$MACON_LIB" "$MACON_LIBEXEC"
 }
 
 cli_cmd_failsafe() {

@@ -55,6 +55,42 @@ assert_eq "/Users/someone/.local/state/macon" \
     "$(plutil -extract EnvironmentVariables.MACON_STATE raw -o - "$MACON_STATE/test2.plist")" \
     "and macOS reads back exactly the directory that was given"
 
+# --- the library paths -----------------------------------------------------
+#
+# libexec/failsafe.sh defaults MACON_LIB to /usr/local and sources four
+# libraries from it before it reaches its first log line. A daemon inherits no
+# environment at all, so under any other prefix an unnamed MACON_LIB is a boot
+# job that dies before it logs anything -- while the plist file it was started
+# from is still on disk, which is the only thing `macon status` and
+# cli_preflight look at. The machine reports itself protected and is not.
+
+OUT=$(cli_failsafe_plist /opt/macon/libexec/macon/failsafe.sh \
+    "/Users/someone/.local/state/macon" \
+    /opt/macon/libexec/macon/lib /opt/macon/libexec/macon)
+printf '%s\n' "$OUT" > "$MACON_STATE/test5.plist"
+assert_ok "a plist naming all three paths parses" plutil -lint "$MACON_STATE/test5.plist"
+assert_eq "/opt/macon/libexec/macon/lib" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIB raw -o - "$MACON_STATE/test5.plist")" \
+    "and macOS reads MACON_LIB back as the library directory it was given"
+assert_eq "/opt/macon/libexec/macon" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIBEXEC raw -o - "$MACON_STATE/test5.plist")" \
+    "and MACON_LIBEXEC alongside it"
+assert_eq "/Users/someone/.local/state/macon" \
+    "$(plutil -extract EnvironmentVariables.MACON_STATE raw -o - "$MACON_STATE/test5.plist")" \
+    "without displacing MACON_STATE"
+
+# Escaping is per value, not per document.
+OUT=$(cli_failsafe_plist /opt/failsafe.sh "/s&d" "/l<i>b" "/x&y")
+printf '%s\n' "$OUT" > "$MACON_STATE/test6.plist"
+assert_ok "library paths carrying XML metacharacters still parse" \
+    plutil -lint "$MACON_STATE/test6.plist"
+assert_eq "/l<i>b" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIB raw -o - "$MACON_STATE/test6.plist")" \
+    "and MACON_LIB reads back as the path it was"
+assert_eq "/x&y" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIBEXEC raw -o - "$MACON_STATE/test6.plist")" \
+    "and so does MACON_LIBEXEC"
+
 OUT=$(cli_failsafe_plist /usr/local/libexec/macon/failsafe.sh)
 case "$OUT" in
     *EnvironmentVariables*)
@@ -81,6 +117,7 @@ assert_eq "/opt/a&b/failsafe.sh" \
 # daemon and cannot be run here: without this, a plist installed with no
 # environment at all would look exactly as green.
 MACON_LIBEXEC=/opt/macon-libexec
+MACON_LIB=/opt/macon-libexec/lib
 OUT=$(cli_failsafe_plist_for_install)
 assert_contains "$OUT" "/opt/macon-libexec/failsafe.sh" \
     "installing points the job at the installed failsafe"
@@ -88,6 +125,19 @@ assert_contains "$OUT" "$MACON_STATE" \
     "and names the state directory of the user installing it"
 printf '%s\n' "$OUT" > "$MACON_STATE/test4.plist"
 assert_ok "and produces a plist macOS will parse" plutil -lint "$MACON_STATE/test4.plist"
+
+# The whole point of the three values: a prefix that is not /usr/local. The
+# job must carry the libraries THIS CLI is running from, because that is what
+# install.sh put on the machine.
+assert_eq "$MACON_STATE" \
+    "$(plutil -extract EnvironmentVariables.MACON_STATE raw -o - "$MACON_STATE/test4.plist")" \
+    "and macOS reads the state directory back"
+assert_eq "/opt/macon-libexec/lib" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIB raw -o - "$MACON_STATE/test4.plist")" \
+    "and the library directory the failsafe will have to source from"
+assert_eq "/opt/macon-libexec" \
+    "$(plutil -extract EnvironmentVariables.MACON_LIBEXEC raw -o - "$MACON_STATE/test4.plist")" \
+    "and the libexec directory it was installed into"
 
 # --- status -----------------------------------------------------------------
 
