@@ -8,12 +8,29 @@
 # Hence the two defences here: never snapshot an already-modified machine,
 # and keep a forensic copy of the plists powerd actually persists.
 
+_snap_dir() {
+    printf '%s\n' "${MACON_STATE:-$HOME/.local/state/macon}"
+}
+
 snap_path() {
-    printf '%s/snapshot\n' "${MACON_STATE:-$HOME/.local/state/macon}"
+    printf '%s/snapshot\n' "$(_snap_dir)"
 }
 
 snap_exists() {
     [ -f "$(snap_path)" ]
+}
+
+_snap_field() {
+    awk -F= -v k="$1" '$1 == k { print $2; exit }' "$(snap_path)"
+}
+
+# The module's only input validation. These values become pmset arguments on
+# the restore path, and they are read back from a file on disk.
+_snap_is_number() {
+    case "$1" in
+        '' | *[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 # True when the machine already looks like a macon session is in effect.
@@ -33,23 +50,38 @@ snap_save() {
         macon_warn "refusing to snapshot: the machine already looks modified"
         return 1
     fi
-    mkdir -p "${MACON_STATE:-$HOME/.local/state/macon}"
-    {
-        printf 'sleep=%s\n' "$(plat_pmset_read sleep)"
-        printf 'disksleep=%s\n' "$(plat_pmset_read disksleep)"
-        printf 'powernap=%s\n' "$(plat_pmset_read powernap)"
-    } > "$(snap_path)"
-}
 
-_snap_field() {
-    awk -F= -v k="$1" '$1 == k { print $2; exit }' "$(snap_path)"
-}
+    _sleep=$(plat_pmset_read sleep)
+    _disksleep=$(plat_pmset_read disksleep)
+    _powernap=$(plat_pmset_read powernap)
 
-_snap_is_number() {
-    case "$1" in
-        '' | *[!0-9]*) return 1 ;;
-        *) return 0 ;;
-    esac
+    # An unreadable pmset prints nothing and still exits 0. Recording that
+    # would produce a file that passes snap_exists and restores nothing, while
+    # the caller reads success and goes on to modify the machine. Fail closed:
+    # failing to arm is recoverable, a poisoned snapshot is not.
+    for _v in "$_sleep" "$_disksleep" "$_powernap"; do
+        if ! _snap_is_number "$_v"; then
+            macon_warn "refusing to snapshot: could not read the current power values"
+            return 1
+        fi
+    done
+
+    _dir=$(_snap_dir)
+    mkdir -p "$_dir" || return 1
+
+    # Write to a temp file in the same directory and rename over the target.
+    # Redirecting straight at the real path truncates it before the write is
+    # known to succeed, destroying a valid snapshot that cannot be rebuilt.
+    _tmp="$_dir/snapshot.tmp.$$"
+    if ! {
+        printf 'sleep=%s\n' "$_sleep"
+        printf 'disksleep=%s\n' "$_disksleep"
+        printf 'powernap=%s\n' "$_powernap"
+    } > "$_tmp"; then
+        rm -f "$_tmp"
+        return 1
+    fi
+    mv "$_tmp" "$(snap_path)"
 }
 
 # Echoes the pmset argument list, e.g. "sleep 1 disksleep 10 powernap 1".
@@ -67,21 +99,43 @@ snap_restore_args() {
 }
 
 snap_restore() {
+    # Clearing disablesleep runs first and unconditionally: it is the single
+    # call that gives the machine back its ability to sleep, so it must happen
+    # even when the snapshot is missing or unusable.
     plat_pmset_disablesleep 0
-    _args=$(snap_restore_args)
-    if [ -n "$_args" ]; then
-        # Intentionally unquoted: $_args is a validated argument list.
-        # shellcheck disable=SC2086
-        plat_pmset_apply_ac $_args
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        # The one otherwise-invisible failure: nothing else reports it, and the
+        # machine is left unable to sleep.
+        macon_warn "failed to clear disablesleep"
     fi
+
+    _args=$(snap_restore_args)
+    if [ -z "$_args" ]; then
+        # No usable snapshot, so nothing was reapplied. Callers print their own
+        # human-facing message here; the rc alone carries the fact.
+        return 1
+    fi
+
+    # Intentionally unquoted: $_args is a validated argument list.
+    # shellcheck disable=SC2086
+    plat_pmset_apply_ac $_args
+    _apply_rc=$?
+    if [ "$_rc" -eq 0 ]; then
+        _rc=$_apply_rc
+    fi
+    return "$_rc"
 }
 
 # Forensic only. Restoring these files at runtime does not make powerd
 # re-read them; they exist so the real values can be recovered by hand if
-# the snapshot is ever lost.
+# the snapshot is ever lost. Echoes the destination either way, but reports
+# non-zero when no plist actually landed — an empty directory is not a defence.
 snap_backup_plists() {
-    _dst="${MACON_STATE:-$HOME/.local/state/macon}/pmprefs-$(date +%Y%m%d-%H%M%S)"
+    _dst="$(_snap_dir)/pmprefs-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$_dst"
-    cp /Library/Preferences/com.apple.PowerManagement*.plist "$_dst"/ 2>/dev/null
+    plat_backup_pmprefs "$_dst"
+    _backup_rc=$?
     printf '%s\n' "$_dst"
+    return "$_backup_rc"
 }
