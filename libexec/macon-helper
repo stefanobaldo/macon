@@ -208,6 +208,17 @@ helper_install_descriptor() {
     return 0
 }
 
+# A new session must not inherit the previous one's strike count. The counter
+# lives in the run directory, which only a reboot clears -- so a helper that was
+# killed off AC leaves a count behind, and the next session reads it at its
+# first poll. Two strikes are then already spent before that session has seen
+# anything, and a night ends within one interval of starting. It fails toward
+# ending rather than toward staying awake, which is why it is a wart and not a
+# hazard, but a session cut short is still the wrong answer.
+helper_reset_counters() {
+    rm -f "$(helper_offac_path)"
+}
+
 # Echoes yes | no | unknown.
 helper_probe_busy() {
     _d=$1
@@ -383,6 +394,7 @@ if [ -z "${MACON_HELPER_SOURCED:-}" ]; then
         start)
             [ -n "${2:-}" ] || macon_die "usage: macon-helper start DESCRIPTOR"
             helper_install_descriptor "$2" || macon_die "invalid session descriptor"
+            helper_reset_counters
             printf '%s\n' "$$" > "$(sess_pid_path)"
             helper_loop "$(sess_desc_path)"
             ;;

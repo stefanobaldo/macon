@@ -182,6 +182,16 @@ assert_fail "an invalid handed-over descriptor is refused" \
     helper_install_descriptor "$_src"
 assert_fail "a refused descriptor leaves nothing at the canonical path" test -f "$D"
 
+# A new session must not inherit the last one's strike count. The run directory
+# survives everything short of a reboot, so a helper killed while off AC leaves
+# a count behind -- and the next session would spend it at its first poll,
+# ending a night within one interval of starting it.
+setup_desc
+printf '5\n' > "$(helper_offac_path)"
+helper_reset_counters
+assert_fail "starting a session clears any inherited strike count" \
+    test -f "$(helper_offac_path)"
+
 # --- one poll ---------------------------------------------------------------
 
 setup_desc
