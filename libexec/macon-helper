@@ -319,21 +319,11 @@ helper_finish() {
         macon_warn "restore reported a failure while ending the session ($_reason)"
     fi
 
-    # rec_aggregate has two outcomes and they are told apart by exit status,
-    # not by output: a refused id prints nothing at all. Cutting four fields
-    # out of that silence rebuilds exactly the half-empty index row the
-    # aggregate's sentinel exists to prevent.
-    if _agg=$(rec_aggregate "$_id"); then
-        rec_append_session "$_id" \
-            "$(sess_get "$_d" started_at)" "$(macon_now)" "$_reason" \
-            "$(printf '%s' "$_agg" | cut -f1)" \
-            "$(printf '%s' "$_agg" | cut -f2)" \
-            "$(printf '%s' "$_agg" | cut -f3)" \
-            "$(printf '%s' "$_agg" | cut -f4)" ||
-            macon_warn "session '$_id' ended ($_reason) but was not recorded"
-    else
-        macon_warn "session '$_id' ended ($_reason) but its id is not usable as a record key"
-    fi
+    # Bookkeeping cannot fail the session: the restore above has already
+    # happened, and this is the same close-out the CLI performs when `off` ends
+    # a session the helper is not around to close.
+    rec_close_session "$_id" "$(sess_get "$_d" started_at)" "$(macon_now)" "$_reason" ||
+        macon_warn "session '$_id' ended ($_reason) but was not recorded"
 
     _hook=$(sess_get "$_d" hook_end)
     if [ -n "$_hook" ]; then

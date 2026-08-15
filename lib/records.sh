@@ -165,6 +165,29 @@ rec_aggregate() {
     ' "$_p"
 }
 
+# ID STARTED ENDED REASON -- writes the index row that closes out a session,
+# aggregating its samples on the way. rc 0 when a row was written.
+#
+# Every writer goes through here rather than composing the two calls itself:
+# the helper when its loop ends, and the CLI when `off` or an orphan heal ends
+# a session the helper is not around to close. The part worth centralising is
+# the part that is easy to get wrong -- rec_aggregate tells its two outcomes
+# apart by EXIT STATUS, not by output, and cutting four fields out of the
+# silent one rebuilds precisely the half-empty row its sentinels exist to
+# prevent.
+rec_close_session() {
+    _cs_id=$1
+    if ! _cs_agg=$(rec_aggregate "$_cs_id"); then
+        _rec_warn "session '$_cs_id' ended ($4) but its id is not usable as a record key"
+        return 1
+    fi
+    rec_append_session "$_cs_id" "$2" "$3" "$4" \
+        "$(printf '%s' "$_cs_agg" | cut -f1)" \
+        "$(printf '%s' "$_cs_agg" | cut -f2)" \
+        "$(printf '%s' "$_cs_agg" | cut -f3)" \
+        "$(printf '%s' "$_cs_agg" | cut -f4)"
+}
+
 # Index rows, newest first. Optional SINCE filters on the start epoch.
 rec_sessions() {
     _p=$(rec_index_path)
