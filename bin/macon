@@ -87,7 +87,8 @@ macon -- short for mac overnight
 
 usage:
   macon on <hours> [options]      keep the Mac awake for <hours>
-  macon run [options] -- <cmd>    keep it awake while <cmd> runs
+  macon run --max <hours> -- <cmd>
+                                  keep it awake while <cmd> runs
   macon off                       restore power configuration now
   macon status                    show the current state
   macon report [--out FILE]       render an HTML report of past sessions
@@ -97,7 +98,8 @@ usage:
   macon version | help
 
 options for on and run:
-  --max <hours>            hard ceiling (default: the requested duration)
+  --max <hours>            hard ceiling (default: the requested duration;
+                           required by run, which takes no duration of its own)
   --on-expire restore|extend   what to do at the soft deadline (default: restore)
   --extend-by <minutes>    extension step (default: 30)
   --busy-check <cmd>       completion predicate, run as you; exit 0 means busy
@@ -132,6 +134,10 @@ cli_parse_on() {
     OPT_FORCE=0
     OPT_NO_FAILSAFE=0
     OPT_WRAP=0
+    # Not an option: no flag sets it. `run` fills it in with the process it
+    # started, which is the one descriptor field that cannot be known until
+    # after the command exists.
+    OPT_WATCH_PID=""
 
     if [ "${1:-}" = "--wrap" ]; then
         OPT_WRAP=1
@@ -402,10 +408,14 @@ cli_new_desc_path() {
     printf '%s/macon-session.%s.conf\n' "${TMPDIR:-/tmp}" "$$"
 }
 
-cli_cmd_on() {
-    cli_check_environment
-    cli_parse_on "$@" || exit 1
-
+# Every guard that can refuse a session, before a single thing is mutated.
+#
+# Split out of cli_cmd_on for `macon run`, which has to get through all of this
+# BEFORE it starts the command it wraps: a refusal arriving afterwards would
+# leave that command running with nothing keeping the Mac awake for it, and
+# every refusal here is a macon_die -- it exits, so there is no return path on
+# which the caller could clean up.
+cli_preflight() {
     if sess_helper_alive; then
         macon_die "a session is already active; run 'macon off' first"
     fi
@@ -430,7 +440,16 @@ cli_cmd_on() {
         printf 'saved original power state to %s\n' "$(snap_path)"
         printf 'plist backup in %s\n' "$(snap_backup_plists)"
     fi
+}
 
+# Builds the hand-over descriptor from the OPT_* set cli_parse_on published, and
+# arms. Returns non-zero if arming failed, having already rolled back.
+#
+# Shared by `on` and `run` rather than `run` re-entering through cli_cmd_on: the
+# option list cannot be handed back to a parser in a POSIX shell without being
+# flattened into a string first, and a re-parse would drop --wrap along with the
+# completion source that makes `--on-expire extend` legal in the first place.
+cli_start_session() {
     _id=$(macon_new_session_id)
     _now=$(macon_now)
     _d=$(cli_new_desc_path)
@@ -453,7 +472,21 @@ cli_cmd_on() {
     cli_desc_set "$_d" hook_warn "$OPT_HOOK_WARN"
     cli_desc_set "$_d" busy_timeout 30
 
-    if [ -n "$OPT_BUSY_CHECK" ]; then
+    # A descriptor holds exactly one completion source, so the order here is a
+    # precedence rule. The wrapped process comes first because it is the whole
+    # of what `run` is -- but a flag the user typed and macon then ignored is
+    # how a session ends at a time nobody asked for, so it is said out loud.
+    if [ -n "$OPT_WATCH_PID" ]; then
+        if [ -n "$OPT_BUSY_CHECK" ]; then
+            macon_warn "ignoring --busy-check: 'macon run' watches the command it started"
+        fi
+        if [ "$OPT_SENTINEL" -eq 1 ]; then
+            macon_warn "ignoring --sentinel: 'macon run' watches the command it started"
+        fi
+        cli_desc_set "$_d" completion process
+        cli_desc_set "$_d" watch_pid "$OPT_WATCH_PID"
+        OPT_SENTINEL=0
+    elif [ -n "$OPT_BUSY_CHECK" ]; then
         cli_desc_set "$_d" completion busy_check
         cli_desc_set "$_d" busy_check "$OPT_BUSY_CHECK"
     elif [ "$OPT_SENTINEL" -eq 1 ]; then
@@ -471,7 +504,7 @@ cli_cmd_on() {
 
     if ! cli_arm "$_d"; then
         rm -f "$_d"
-        exit 1
+        return 1
     fi
     # The helper works from its own copy from here on, so this one is not just
     # redundant, it is a second copy of the session's commands sitting in a
@@ -486,6 +519,14 @@ cli_cmd_on() {
         "$(date -r "$_soft" '+%H:%M')" \
         "$(date -r "$_hard" '+%H:%M')"
     printf 'safe to close the lid.\n'
+    return 0
+}
+
+cli_cmd_on() {
+    cli_check_environment
+    cli_parse_on "$@" || exit 1
+    cli_preflight
+    cli_start_session || exit 1
 }
 
 # Stops the watch loop and clears the run directory. The helper goes first and
@@ -672,6 +713,152 @@ ${_env}
 PLIST
 }
 
+# Splits `macon run [opts] -- cmd...` at the separator and validates that the
+# shape is there at all.
+#
+# WRAP_OPTS and WRAP_CMD are DISPLAY values, and nothing acts on either: joining
+# arguments with spaces cannot represent one that contains a space, so a string
+# rebuilt from `--busy-check 'pgrep -qf my daemon'` is four arguments where the
+# user gave two. The option list is re-derived from the real positional
+# parameters by cli_run_parse and the command by cli_cmd_run, each of which
+# still has them.
+#
+# shellcheck disable=SC2034
+cli_split_wrap_args() {
+    WRAP_OPTS=""
+    WRAP_CMD=""
+    _seen=0
+    while [ $# -gt 0 ]; do
+        if [ "$_seen" -eq 0 ] && [ "$1" = "--" ]; then
+            _seen=1
+            shift
+            continue
+        fi
+        if [ "$_seen" -eq 0 ]; then
+            WRAP_OPTS="$WRAP_OPTS $1"
+        else
+            WRAP_CMD="$WRAP_CMD $1"
+        fi
+        shift
+    done
+    WRAP_OPTS=${WRAP_OPTS# }
+    WRAP_CMD=${WRAP_CMD# }
+
+    if [ "$_seen" -eq 0 ]; then
+        macon_warn "macon run requires a -- separator: macon run [options] -- <command>"
+        return 1
+    fi
+    if [ -z "$WRAP_CMD" ]; then
+        macon_warn "no command given after --"
+        return 1
+    fi
+    return 0
+}
+
+# Parses the options that precede `--`, from the arguments themselves.
+#
+# A shell function cannot hand a sublist back to its caller, so the list is
+# rotated instead: the leading options are moved to the end, the wrapped command
+# is shifted away, and what is left is exactly the options -- still as separate
+# arguments, spaces and all. This function has its own $@, so the caller's
+# survives the rotation and still carries the command.
+cli_run_parse() {
+    _n=0
+    for _a in "$@"; do
+        [ "$_a" = "--" ] && break
+        _n=$((_n + 1))
+    done
+
+    _i=0
+    while [ "$_i" -lt "$_n" ]; do
+        _a=$1
+        shift
+        set -- "$@" "$_a"
+        _i=$((_i + 1))
+    done
+    shift $(( $# - _n ))
+
+    cli_parse_on --wrap "$@"
+}
+
+# The wrapped process, and whether a session was ever armed for it. The traps
+# below read both.
+MACON_WRAP_PID=""
+MACON_WRAP_ARMED=0
+
+# A `macon run` that dies before arming -- including through macon_die, which
+# exits rather than returning -- must not leave the command it started running
+# with nothing watching over it. Once the session is armed this is deliberately
+# a no-op: from then on the command is the user's business and macon's job is
+# only to keep the machine awake for it.
+cli_run_cleanup() {
+    [ "$MACON_WRAP_ARMED" -eq 1 ] && return 0
+    [ -n "$MACON_WRAP_PID" ] || return 0
+    macon_warn "stopping the wrapped command: no session was armed for it"
+    macon_kill_group "$MACON_WRAP_PID"
+    wait "$MACON_WRAP_PID" 2>/dev/null || :
+}
+
+# Ctrl-C has to reach the command as well. Job control puts it in a process
+# group of its own, which is what lets the cleanup above take down the tree --
+# and is also what stops the terminal's own signal from ever getting there.
+cli_run_interrupt() {
+    [ -n "$MACON_WRAP_PID" ] && macon_kill_group "$MACON_WRAP_PID"
+    exit 130
+}
+
+cli_cmd_run() {
+    cli_check_environment
+    cli_split_wrap_args "$@" || exit 1
+    cli_run_parse "$@" || exit 1
+
+    # `run` takes no positional duration, so the ceiling is the only bound the
+    # session can have -- and a session with no bound is the one thing this tool
+    # must never start.
+    if [ -z "$OPT_MAX" ]; then
+        macon_die "macon run requires --max <hours> as the hard ceiling"
+    fi
+    OPT_HOURS=$OPT_MAX
+
+    # Everything that can refuse, before the command exists.
+    cli_preflight
+
+    # Drop the options and the separator; what remains is the command, still as
+    # the arguments the user actually typed. Running it through `sh -c` on a
+    # flattened string would put them through a second round of splitting and
+    # expansion: `macon run -- grep 'a b' f` would search for `a`, and a `;`
+    # inside an argument would stop being data.
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+    shift
+
+    trap cli_run_cleanup EXIT
+    trap cli_run_interrupt INT TERM
+
+    # Its own process group, so the cleanup path can take down what the command
+    # has already spawned instead of orphaning a tree under a session that never
+    # started. stdin is /dev/null explicitly: `run` is for unattended work, and
+    # with a controlling terminal a background read would be a SIGTTIN and a job
+    # stopped for as long as the ceiling allows.
+    case $- in
+        *m*) _mon=1 ;;
+        *) _mon=0 ;;
+    esac
+    set -m
+    "$@" < /dev/null &
+    MACON_WRAP_PID=$!
+    [ "$_mon" -eq 1 ] || set +m
+
+    OPT_WATCH_PID=$MACON_WRAP_PID
+    cli_start_session || exit 1
+    MACON_WRAP_ARMED=1
+
+    printf 'watching pid %s; the session ends when it exits.\n' "$MACON_WRAP_PID"
+    wait "$MACON_WRAP_PID"
+    _rc=$?
+    printf 'the wrapped command exited with %s\n' "$_rc"
+    exit "$_rc"
+}
+
 # The plist this machine should have: the installed failsafe, and the state
 # directory of the user installing it. Separate from the install verb so what
 # would be written can be asserted without a test suite that registers a
@@ -716,6 +903,7 @@ cli_cmd_failsafe() {
 if [ -z "${MACON_CLI_SOURCED:-}" ]; then
     case "${1:-}" in
         on) shift; cli_cmd_on "$@" ;;
+        run) shift; cli_cmd_run "$@" ;;
         failsafe) shift; cli_cmd_failsafe "$@" ;;
         off) cli_cmd_off ;;
         status) cli_cmd_status ;;

@@ -69,14 +69,18 @@ _helper_is_abs_path() {
 
 # Reads the thermal level under a bound, via a FILE rather than a pipe.
 #
-# macon_run_timeout can only signal the process it started. plat_thermal_pressure
-# runs powermetrics in a child of that process, so a hung sampler outlives the
-# kill -- and if its output were being collected up a command-substitution pipe,
-# the orphan would hold that pipe open and the poll would block for exactly as
-# long as the sampler hung. The timeout would then be decorative on the one call
-# it exists to bound. Writing to a file decouples the two: the reader gets
-# whatever landed and moves on, and an orphan that writes later writes into a
-# file nobody is waiting on.
+# This shape is what a bound that reaches only the direct child costs its
+# caller, and it is the reason macon_run_timeout now runs the command in its own
+# process group: plat_thermal_pressure runs powermetrics in a child of the
+# process being timed, so a hung sampler used to outlive the kill and -- with
+# its output collected up a command-substitution pipe -- hold that pipe open
+# until it finished on its own. The poll then blocked for exactly as long as the
+# sampler hung, on the one call the timeout exists to bound.
+#
+# The file is kept now that the group kill has closed that path. It costs a
+# temporary file per poll and it is the reading that must not be able to stall
+# the loop; a second, independent reason for the poll to survive a hung sampler
+# is worth that.
 _helper_sample_thermal() {
     _tf="$(sess_run_dir)/thermal.$$"
     : > "$_tf" 2>/dev/null || return 0
