@@ -211,7 +211,7 @@ fake_set battery_pct 80
 setup_desc
 # Overrides of the fake, for the two states it cannot script. Invoked by the
 # helper, so shellcheck cannot see the call sites from here.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 plat_thermal_pressure() { sleep 30; }
 # shellcheck disable=SC2034
 MACON_THERMAL_TIMEOUT=1
@@ -224,7 +224,7 @@ assert_ok "a hung thermal sampler does not block the poll" test "$_elapsed" -lt 
 
 # A level carrying a tab would shift every later column, so the sample would be
 # refused outright and the poll would lose its battery reading and its count.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 plat_thermal_pressure() { printf 'Serious\tand then some\n'; }
 # shellcheck disable=SC2034
 MACON_THERMAL_TIMEOUT=20
@@ -295,7 +295,7 @@ assert_eq "no" "$(cat "$MACON_STATE/hook_saw")" \
 assert_eq "done" "$(cat "$MACON_STATE/hook_reason")" \
     "the end hook is told why the session ended"
 
-_row=$(rec_sessions | head -1)
+_row=$(rec_sessions 0 | head -1)
 assert_eq "$ID" "$(printf '%s' "$_row" | cut -f1)" "the session lands in the index"
 assert_eq "done" "$(printf '%s' "$_row" | cut -f4)" "the index records the reason"
 assert_eq "Serious" "$(printf '%s' "$_row" | cut -f5)" "the index carries the worst level"
@@ -315,13 +315,13 @@ setup_desc
 sess_set "$D" session_id ".."
 fake_set sleep_disabled yes
 printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
-_before=$(rec_sessions | wc -l | tr -d ' ')
+_before=$(rec_sessions 0 | wc -l | tr -d ' ')
 fake_reset_calls
 helper_finish "$D" "hard-ceiling"
 assert_fail "an unusable session id does not cost the restore" plat_sleep_disabled
 assert_eq "1" "$(fake_call_count 'pmset_apply_ac')" \
     "an unusable session id still restores in one call"
-assert_eq "$_before" "$(rec_sessions | wc -l | tr -d ' ')" \
+assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
     "an unusable session id writes no half-empty index row"
 
 # --- the loop itself --------------------------------------------------------
@@ -343,7 +343,7 @@ rm -f "$MACON_STATE/loop-a.done" "$MACON_STATE/loop-a.deadlines"
 arm_snapshot
 MACON_FAKE_NOW=1700003600
 _polls=0
-# shellcheck disable=SC2329  # the loop under test calls this
+# shellcheck disable=SC2317,SC2329  # the loop under test calls this
 helper_wait() {
     _polls=$((_polls + 1))
     sess_get "$D" soft_deadline >> "$MACON_STATE/loop-a.deadlines"
@@ -355,7 +355,7 @@ assert_eq "1700004200" "$(head -1 "$MACON_STATE/loop-a.deadlines")" \
     "a busy extend session at its deadline pushes the deadline once"
 assert_eq "1700004200" "$(sed -n '3p' "$MACON_STATE/loop-a.deadlines")" \
     "it does not push again while inside the new deadline"
-assert_eq "done" "$(rec_sessions | head -1 | cut -f4)" \
+assert_eq "done" "$(rec_sessions 0 | head -1 | cut -f4)" \
     "the completion source ends the extended session"
 assert_fail "the loop returns having cleared the descriptor" test -f "$D"
 
@@ -369,7 +369,7 @@ sess_set "$D" sentinel_path "$MACON_STATE/loop-b.done"
 rm -f "$MACON_STATE/loop-b.done"
 arm_snapshot
 MACON_FAKE_NOW=1700003600
-# shellcheck disable=SC2329  # the loop under test calls this
+# shellcheck disable=SC2317,SC2329  # the loop under test calls this
 helper_wait() {
     sess_get "$D" soft_deadline > "$MACON_STATE/loop-b.deadline"
     : > "$MACON_STATE/loop-b.done"
@@ -389,7 +389,7 @@ rm -f "$MACON_STATE/loop-c.done" "$MACON_STATE/loop-c.warned"
 arm_snapshot
 MACON_FAKE_NOW=1700002800
 _polls=0
-# shellcheck disable=SC2329  # the loop under test calls this
+# shellcheck disable=SC2317,SC2329  # the loop under test calls this
 helper_wait() {
     _polls=$((_polls + 1))
     [ "$_polls" -lt 3 ] || : > "$MACON_STATE/loop-c.done"
