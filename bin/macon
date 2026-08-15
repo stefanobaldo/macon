@@ -1,0 +1,243 @@
+#!/bin/sh
+# macon -- short for mac overnight.
+# Keep a Mac working with the lid closed, and guarantee the power
+# configuration comes back.
+#
+# This is the unprivileged half of the tool. It parses, validates, and hands a
+# descriptor to the root helper; it never runs the watch loop itself.
+set -u
+
+MACON_VERSION=0.1.0
+MACON_LIB=${MACON_LIB:-/usr/local/libexec/macon/lib}
+MACON_LIBEXEC=${MACON_LIBEXEC:-/usr/local/libexec/macon}
+MACON_MIN_MACOS=13
+
+# Longest numeric option accepted, in digits. Not hygiene: /bin/sh here is
+# bash 3.2, whose `[ -lt ]` parses its operands into intmax_t and EXITS 2 on
+# anything larger rather than returning false. An over-long value therefore
+# does not fail a comparison, it makes the comparison fall through -- the guard
+# stops guarding. lib/session.sh bounds the same class of value for the same
+# reason.
+MACON_MAX_DIGITS=18
+
+# A session longer than a year is a typo, not a request. The bound exists so
+# that the arithmetic building the deadlines stays far away from the overflow
+# that would silently produce a ceiling in the past.
+MACON_MAX_HOURS=8760
+
+if [ -z "${MACON_CLI_SOURCED:-}" ]; then
+    # shellcheck source=lib/common.sh
+    . "$MACON_LIB/common.sh"
+    # shellcheck source=lib/platform.sh
+    . "$MACON_LIB/platform.sh"
+    # shellcheck source=lib/decide.sh
+    . "$MACON_LIB/decide.sh"
+    # shellcheck source=lib/session.sh
+    . "$MACON_LIB/session.sh"
+    # shellcheck source=lib/snapshot.sh
+    . "$MACON_LIB/snapshot.sh"
+    # shellcheck source=lib/records.sh
+    . "$MACON_LIB/records.sh"
+fi
+
+# A plain decimal integer, bounded at both ends and with no leading zeros.
+# The zeros matter as much as the magnitude: `[` reads them as decimal and
+# $(( )) reads them as octal, so `030` would mean 30 to this guard and 24 to
+# the deadline computed from it -- and `08` is not valid octal at all, which is
+# a FATAL arithmetic error in a non-interactive shell rather than one this
+# function could report.
+cli_is_number() {
+    case "$1" in
+        '' | *[!0-9]*) return 1 ;;
+        0) return 0 ;;
+        0*) return 1 ;;
+    esac
+    [ "${#1}" -le "$MACON_MAX_DIGITS" ]
+}
+
+# Does this option have its value? Called with the remainder of the argument
+# list, so `--max` at the end of the line is refused by name instead of read as
+# an unset positional parameter -- which under `set -u` aborts the shell with a
+# diagnostic nobody can act on.
+cli_need_arg() {
+    [ "$#" -ge 2 ] && return 0
+    macon_warn "$1 requires a value"
+    return 1
+}
+
+# Free-form option values become descriptor lines. A newline inside one lands
+# as its own KEY=VALUE line, and the key worth forging is hard_ceiling. sess_set
+# refuses to write such a value, but these fields are optional, so a refusal
+# down there is a field that silently is not there; refused here, the message
+# names the flag.
+cli_is_single_line() {
+    case "$2" in
+        *'
+'*)
+            macon_warn "$1 cannot contain a newline"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+cli_usage() {
+    cat <<'USAGE'
+macon -- short for mac overnight
+
+usage:
+  macon on <hours> [options]      keep the Mac awake for <hours>
+  macon run [options] -- <cmd>    keep it awake while <cmd> runs
+  macon off                       restore power configuration now
+  macon status                    show the current state
+  macon report [--out FILE]       render an HTML report of past sessions
+  macon saved                     show the stored power snapshot
+  macon log [--session ID]        show a session's raw samples
+  macon failsafe {install|remove|status}
+  macon version | help
+
+options for on and run:
+  --max <hours>            hard ceiling (default: the requested duration)
+  --on-expire restore|extend   what to do at the soft deadline (default: restore)
+  --extend-by <minutes>    extension step (default: 30)
+  --busy-check <cmd>       completion predicate, run as you; exit 0 means busy
+  --sentinel               enable the sentinel file and print its path
+  --hook-end <cmd>         run after the restore, with MACON_REASON set
+  --hook-warn <cmd>        run --pre-warn minutes before the soft deadline
+  --pre-warn <minutes>     warning lead time (default: 15)
+  --interval <seconds>     sampling interval (default: 300, floor 30)
+  --force                  allow starting on battery
+  --no-failsafe            allow starting without the boot failsafe
+USAGE
+}
+
+# Parses the options shared by `on` and `run`, publishing them as OPT_*.
+#
+# Those variables ARE the function's return value -- there is no other way for
+# a POSIX shell function to hand back thirteen results -- which is why the
+# unused-variable check is disabled for the whole function: every OPT_ here is
+# an output, and its consumers are the subcommands below and the test suite.
+# shellcheck disable=SC2034
+cli_parse_on() {
+    OPT_HOURS=""
+    OPT_MAX=""
+    OPT_POLICY=restore
+    OPT_EXTEND_BY=30
+    OPT_BUSY_CHECK=""
+    OPT_SENTINEL=0
+    OPT_HOOK_END=""
+    OPT_HOOK_WARN=""
+    OPT_PRE_WARN=15
+    OPT_INTERVAL=300
+    OPT_FORCE=0
+    OPT_NO_FAILSAFE=0
+    OPT_WRAP=0
+
+    if [ "${1:-}" = "--wrap" ]; then
+        OPT_WRAP=1
+        shift
+    else
+        OPT_HOURS=${1:-}
+        shift 2>/dev/null || :
+        if ! cli_is_number "$OPT_HOURS"; then
+            macon_warn "a duration in hours is required: macon on <hours>"
+            return 1
+        fi
+        if [ "$OPT_HOURS" -lt 1 ] || [ "$OPT_HOURS" -gt "$MACON_MAX_HOURS" ]; then
+            macon_warn "a duration must be between 1 and $MACON_MAX_HOURS hours"
+            return 1
+        fi
+    fi
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --max)         cli_need_arg "$@" || return 1; OPT_MAX=$2; shift 2 ;;
+            --on-expire)   cli_need_arg "$@" || return 1; OPT_POLICY=$2; shift 2 ;;
+            --extend-by)   cli_need_arg "$@" || return 1; OPT_EXTEND_BY=$2; shift 2 ;;
+            --busy-check)  cli_need_arg "$@" || return 1; OPT_BUSY_CHECK=$2; shift 2 ;;
+            --sentinel)    OPT_SENTINEL=1; shift ;;
+            --hook-end)    cli_need_arg "$@" || return 1; OPT_HOOK_END=$2; shift 2 ;;
+            --hook-warn)   cli_need_arg "$@" || return 1; OPT_HOOK_WARN=$2; shift 2 ;;
+            --pre-warn)    cli_need_arg "$@" || return 1; OPT_PRE_WARN=$2; shift 2 ;;
+            --interval)    cli_need_arg "$@" || return 1; OPT_INTERVAL=$2; shift 2 ;;
+            --force)       OPT_FORCE=1; shift ;;
+            --no-failsafe) OPT_NO_FAILSAFE=1; shift ;;
+            *)             macon_warn "unknown option: $1"; return 1 ;;
+        esac
+    done
+
+    case "$OPT_POLICY" in
+        restore | extend) ;;
+        *) macon_warn "--on-expire must be restore or extend"; return 1 ;;
+    esac
+
+    cli_is_single_line --busy-check "$OPT_BUSY_CHECK" || return 1
+    cli_is_single_line --hook-end "$OPT_HOOK_END" || return 1
+    cli_is_single_line --hook-warn "$OPT_HOOK_WARN" || return 1
+
+    for _opt in "--extend-by:$OPT_EXTEND_BY" "--pre-warn:$OPT_PRE_WARN" \
+        "--interval:$OPT_INTERVAL"; do
+        if ! cli_is_number "${_opt#*:}"; then
+            macon_warn "${_opt%%:*} must be a plain integer: '${_opt#*:}'"
+            return 1
+        fi
+    done
+
+    if [ "$OPT_INTERVAL" -lt 30 ]; then
+        macon_warn "--interval has a floor of 30 seconds"
+        return 1
+    fi
+
+    _has_source=0
+    [ -n "$OPT_BUSY_CHECK" ] && _has_source=1
+    [ "$OPT_SENTINEL" -eq 1 ] && _has_source=1
+    [ "$OPT_WRAP" -eq 1 ] && _has_source=1
+
+    if [ "$OPT_POLICY" = "extend" ]; then
+        if [ "$_has_source" -eq 0 ]; then
+            macon_warn "--on-expire extend requires a completion source (--busy-check, --sentinel, or run)"
+            return 1
+        fi
+        if [ -z "$OPT_MAX" ]; then
+            macon_warn "--on-expire extend requires an explicit --max"
+            return 1
+        fi
+    fi
+
+    if [ -z "$OPT_MAX" ]; then
+        OPT_MAX=$OPT_HOURS
+    fi
+    # Still empty only under --wrap, where the ceiling is the caller's to
+    # require; macon run refuses to start without one.
+    if [ -n "$OPT_MAX" ]; then
+        if ! cli_is_number "$OPT_MAX"; then
+            macon_warn "--max must be a plain integer number of hours: '$OPT_MAX'"
+            return 1
+        fi
+        if [ "$OPT_MAX" -lt 1 ] || [ "$OPT_MAX" -gt "$MACON_MAX_HOURS" ]; then
+            macon_warn "--max must be between 1 and $MACON_MAX_HOURS hours"
+            return 1
+        fi
+    fi
+    if [ "$OPT_WRAP" -eq 0 ] && [ "$OPT_MAX" -lt "$OPT_HOURS" ]; then
+        macon_warn "--max cannot be smaller than the requested duration"
+        return 1
+    fi
+
+    return 0
+}
+
+cli_check_environment() {
+    _major=$(plat_macos_major)
+    if ! cli_is_number "$_major" || [ "$_major" -lt "$MACON_MIN_MACOS" ]; then
+        macon_die "macOS $MACON_MIN_MACOS or later is required (found $(sw_vers -productVersion 2>/dev/null))"
+    fi
+}
+
+if [ -z "${MACON_CLI_SOURCED:-}" ]; then
+    case "${1:-}" in
+        version) printf 'macon %s\n' "$MACON_VERSION" ;;
+        help | --help | -h | '') cli_usage ;;
+        *) cli_check_environment; macon_die "subcommand '$1' is not implemented yet" ;;
+    esac
+fi
