@@ -7,20 +7,24 @@ on:
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
+    env:
+      # Pinned, not whatever apt happens to ship. The distribution package moves
+      # between runner images, and shellcheck releases rename findings between
+      # versions (SC2329 was SC2317), so an unpinned linter fails a branch that
+      # was clean when it was written, for a reason that is not in the diff.
+      SHELLCHECK_VERSION: v0.11.0
     steps:
       - uses: actions/checkout@v4
       - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Lint
-        # The executables in libexec/ and bin/ carry no extension, so the find
-        # below cannot reach them. They are named explicitly, in the same
-        # invocation rather than a separate one: a file passed as input is a
-        # file shellcheck will follow a `source=` directive into, which is how
-        # the tests that source them stay free of SC1091.
         run: |
-          find . -name '*.sh' -not -path './.git/*' -print0 \
-            | xargs -0 shellcheck -s sh -S style libexec/macon-helper
-          shellcheck -s sh -S style bin/macon install.sh 2>/dev/null || true
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL "$url" | tar -xJ
+          sudo install "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/
+          shellcheck --version
+      - name: Lint
+        # The same script a working session runs, so a green lint here and a
+        # green lint there mean the same thing.
+        run: sh tests/lint.sh
 
   tests:
     runs-on: macos-latest
