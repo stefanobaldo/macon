@@ -56,6 +56,9 @@ End the session as soon as the work finishes, instead of waiting out the clock:
 the boot restore is registered, and `macon version` and `macon help` do what they
 look like.
 
+`macon status` leads with the version it is running, so pasting it into a bug
+report says which macon produced the rest of the output.
+
 ## How it stays safe
 
 - A **hard ceiling** is evaluated before every other signal, so nothing — not a

@@ -124,4 +124,25 @@ assert_fail "a newline in the warn hook is rejected" \
     cli_parse_on 8 --hook-warn 'true
 hard_ceiling=99'
 
+# --- the copyright notice ---------------------------------------------------
+#
+# LICENSE is authoritative and the string in bin/macon is a courtesy copy, which
+# means there are now two places for the same fact to live. Asserting they agree
+# is cheaper than noticing the year drifted in one of them three releases later.
+# The installed CLI ships without LICENSE beside it, so the copy cannot be read
+# from disk at run time -- which is exactly why it can drift.
+LICENSE_LINE=$(grep -i '^Copyright' "$REPO_DIR/LICENSE")
+assert_contains "$MACON_COPYRIGHT" "Stefano Baldo" \
+    "the notice names the copyright holder"
+assert_contains "$LICENSE_LINE" "Stefano Baldo" \
+    "and LICENSE names the same one"
+
+# Compared as year plus holder rather than as whole strings: LICENSE carries the
+# bare notice, the CLI's adds the licence name, so equality would fail on a
+# difference that is intended.
+assert_contains "$LICENSE_LINE" "$(printf '%s' "$MACON_COPYRIGHT" | sed 's/^Copyright (c) \([0-9]*\) \(.*\)\. MIT\.$/Copyright (c) \1 \2/')" \
+    "the year and holder in bin/macon match LICENSE exactly"
+assert_contains "$MACON_COPYRIGHT" "MIT" \
+    "and the notice names the licence"
+
 teardown_state

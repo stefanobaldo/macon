@@ -263,6 +263,12 @@ OUT=$(cli_cmd_status)
 assert_contains "$OUT" "none" "status reports an idle machine"
 assert_contains "$OUT" "absent" "status reports a missing boot failsafe"
 assert_contains "$OUT" "manual" "status reports how the last session ended"
+
+# The bug report template asks a user to paste this output, so it has to say
+# which macon produced it. Asserted against MACON_VERSION rather than a literal,
+# so bumping the version does not require editing a test to match.
+assert_contains "$OUT" "$MACON_VERSION" "status reports the version it is running"
+assert_contains "$OUT" "version:" "and labels it"
 : > "$MACON_FS_PLIST"
 
 # --- saved ------------------------------------------------------------------
