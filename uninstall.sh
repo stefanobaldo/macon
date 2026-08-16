@@ -12,8 +12,8 @@
 # Session records and the power snapshot are deliberately left in place; the
 # script says where they are.
 #
-# Sourcing this file with MACON_UNINSTALL_SOURCED=1 defines the functions and
-# removes nothing.
+# Sourcing this file defines the functions and removes nothing -- see the single
+# statement at the very end.
 set -u
 
 MACON_PREFIX=${MACON_PREFIX:-/usr/local}
@@ -182,7 +182,17 @@ uninstall_state_note() {
     return 0
 }
 
-if [ -z "${MACON_UNINSTALL_SOURCED:-}" ]; then
+# Everything below this line touches the machine: sudo launchctl, sudo rm -f
+# and sudo rm -rf. It is a function, and the one statement at the end of the
+# file is the only thing that calls it.
+#
+# It used to be an `if [ -z "$MACON_UNINSTALL_SOURCED" ]; then ... fi` wrapped
+# around the same lines. That shape is a guard only while its two halves stay
+# paired: one unbalanced `fi` closes it early and turns the removals into
+# top-level code, which the test suite that sources this file for its pure
+# functions then runs for real. The installer had exactly that defect and it
+# cost a real, unasked-for installation.
+uninstall_main() {
     _force=0
     case "${1:-}" in
         --force) _force=1 ;;
@@ -236,4 +246,18 @@ if [ -z "${MACON_UNINSTALL_SOURCED:-}" ]; then
 
     printf '\nmacon is uninstalled.\n'
     uninstall_state_note
-fi
+}
+
+# The whole decision, in four lines that cannot come apart. `return` outside a
+# function returns from a file that is being SOURCED and is an error in one that
+# is being EXECUTED -- bash 3.2, which is /bin/sh here, reports it on stderr
+# (discarded) and carries on. Sourcing stops inside the case; execution falls out
+# of it and into uninstall_main. Executed under some other name the `*` branch is
+# taken, `return` fails because the file is being executed, and the uninstall
+# proceeds. install.sh carries the same four lines, for the same reason.
+case "${0##*/}" in
+    uninstall.sh) ;;               # executed: fall through to uninstall_main
+    *) return 0 2>/dev/null ;;     # sourced: stop here
+esac
+
+uninstall_main "$@"
