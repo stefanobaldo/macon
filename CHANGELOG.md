@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `macon status` reports the version it is running, as its first row. The bug
+  report template asks for this output, which previously could describe a
+  problem without saying which macon had it.
+- `macon version` prints the copyright and licence alongside the version.
+
 ## [0.1.0]
 
 First release. Keeps a Mac awake with the lid closed and restores the original

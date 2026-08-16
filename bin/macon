@@ -8,6 +8,12 @@
 set -u
 
 MACON_VERSION=0.1.0
+
+# The authoritative notice is LICENSE; this is the courtesy copy `macon version`
+# prints, and a test asserts the two still agree. It is a separate string rather
+# than something parsed out of LICENSE at run time because the installed CLI
+# does not ship LICENSE beside it -- there would be nothing to read.
+MACON_COPYRIGHT='Copyright (c) 2026 Stefano Baldo. MIT.'
 MACON_LIB=${MACON_LIB:-/usr/local/libexec/macon/lib}
 MACON_LIBEXEC=${MACON_LIBEXEC:-/usr/local/libexec/macon}
 MACON_MIN_MACOS=13
@@ -678,6 +684,12 @@ _cli_row() {
 }
 
 cli_cmd_status() {
+    # First, because this output is what the bug report template asks a user to
+    # paste and the version is the first thing anyone reading it needs. It was
+    # missing: a report could say exactly what went wrong without saying which
+    # macon it went wrong in.
+    _cli_row "version:" "$MACON_VERSION"
+
     if plat_sleep_disabled; then
         _cli_row "clamshell sleep:" "DISABLED (safe to close the lid)"
     else
@@ -1153,7 +1165,10 @@ if [ -z "${MACON_CLI_SOURCED:-}" ]; then
         saved) cli_cmd_saved ;;
         report) shift; cli_cmd_report "$@" ;;
         log) shift; cli_cmd_log "$@" ;;
-        version) printf 'macon %s\n' "$MACON_VERSION" ;;
+        version)
+            printf 'macon %s\n' "$MACON_VERSION"
+            printf '%s\n' "$MACON_COPYRIGHT"
+            ;;
         help | --help | -h | '') cli_usage ;;
         *) cli_check_environment; macon_die "subcommand '$1' is not implemented yet" ;;
     esac
