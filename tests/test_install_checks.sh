@@ -1,17 +1,15 @@
 #!/bin/sh
 # The installer, exercised through the half that can be run safely.
 #
-# install.sh guards everything that touches the machine behind
-# MACON_INSTALL_SOURCED, so sourcing it here defines the functions and does
-# nothing else. Nothing in this file may write outside its temporary prefix,
+# install.sh keeps everything that touches the machine in a function that only
+# an executed run calls, so sourcing it here defines the functions and does
+# nothing else. tests/test_source_inert.sh is the proof of that, and it is what
+# this file leans on: nothing here may write outside its temporary prefix,
 # register a LaunchDaemon, or reach for sudo -- a password prompt inside a test
 # suite is a hang, not a failure.
 # shellcheck source=tests/helpers.sh
 . "$TESTS_DIR/helpers.sh"
 setup_state
-
-MACON_INSTALL_SOURCED=1
-export MACON_INSTALL_SOURCED
 
 # Inherited on purpose, and the reason install.sh honours an inherited value:
 # sourcing does not change $0, so the script's own fallback resolves the source
@@ -89,14 +87,14 @@ assert_contains "$OUT" "sh install.sh" "under sudo it prints the command to re-r
 
 # --- SRC_DIR ----------------------------------------------------------------
 
-OUT=$(MACON_INSTALL_SOURCED=1 SRC_DIR=/opt/elsewhere \
+OUT=$(SRC_DIR=/opt/elsewhere \
     sh -c '. "$1/install.sh"; printf "%s\n" "$SRC_DIR"' sh "$REPO_DIR")
 assert_eq "/opt/elsewhere" "$OUT" "an inherited SRC_DIR survives sourcing"
 
 # The single quotes are the point: $SRC_DIR is read in the child shell, after
 # install.sh has run there.
 # shellcheck disable=SC2016
-OUT=$(env -u SRC_DIR MACON_INSTALL_SOURCED=1 \
+OUT=$(env -u SRC_DIR \
     sh -c 'cd "$1" && . ./install.sh; printf "%s\n" "$SRC_DIR"' sh "$REPO_DIR")
 assert_eq "$REPO_DIR" "$OUT" "and without one it falls back to the script's own directory"
 
@@ -179,7 +177,7 @@ run_installer() (
     PATH="$GUARD/shim:$PATH"
     export PATH
     MACON_RUN="$GUARD/run" MACON_STATE="$GUARD/state" MACON_PREFIX="$GUARD/prefix" \
-        SRC_DIR="$REPO_DIR" env -u MACON_INSTALL_SOURCED \
+        SRC_DIR="$REPO_DIR" \
         sh "$REPO_DIR/install.sh" "$@" 2>&1
 )
 

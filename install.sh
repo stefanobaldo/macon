@@ -12,9 +12,9 @@
 # dies with the power settings still applied, and nothing detects the orphan
 # until someone runs macon status, macon on, or reboots.
 #
-# Sourcing this file with MACON_INSTALL_SOURCED=1 defines the functions and
-# does nothing else, which is what makes the checks testable without a suite
-# that writes to /usr/local.
+# Sourcing this file defines the functions and does nothing else -- see the
+# single statement at the very end -- which is what makes the checks testable
+# without a suite that writes to /usr/local.
 set -u
 
 MACON_MIN_MACOS=13
@@ -361,7 +361,19 @@ install_path_note() {
     return 0
 }
 
-if [ -z "${MACON_INSTALL_SOURCED:-}" ]; then
+# Everything below this line touches the machine: sudo, chown, and the boot
+# failsafe. It is a function, and the one statement at the end of the file is
+# the only thing that calls it.
+#
+# It used to be an `if [ -z "$MACON_INSTALL_SOURCED" ]; then ... fi` wrapped
+# around the same sixty lines. That shape is a guard only while its two halves
+# stay paired: one unbalanced `fi` -- an edit, a bad merge, a deletion that
+# spanned one -- closes it early and turns the privileged half into top-level
+# code. The test suite sources this file to reach the pure functions above, so
+# from that moment on, sourcing it installs macon for real. That is not a
+# hypothetical; it happened, into /usr/local, on a machine where nobody had
+# asked for an install.
+install_main() {
     # The privileged half, re-entered under sudo by the branch below. It is a
     # re-entry rather than a `sudo sh -c '... . install.sh ...'` so that no
     # path has to survive being embedded in a quoted string, and so that $0 --
@@ -458,5 +470,33 @@ if [ -z "${MACON_INSTALL_SOURCED:-}" ]; then
     else
         printf '\nmacon is installed, but the boot failsafe is not registered.\n' >&2
     fi
-    exit "$_rc"
-fi
+    # Not `exit`: this is the last command of the last command of the file, so
+    # its status is the script's status either way, and a function that can
+    # return normally is one this file can be sourced past.
+    return "$_rc"
+}
+
+# The whole decision, in four lines that cannot come apart.
+#
+# `return` outside a function returns from a file that is being SOURCED, and is
+# an error in a file that is being EXECUTED -- bash 3.2, which is /bin/sh here,
+# reports it on stderr (discarded here) and carries on to the next command. That
+# is the guard: sourcing stops inside the case, execution falls out of it and
+# into install_main.
+#
+# The name test is what makes the bail-out conditional, and it is honest on its
+# own terms -- $0 is this file only when the shell was told to run this file.
+# Nothing depends on it being right, though: executed under some other name, the
+# `*` branch is taken, `return` fails because the file is being executed, and
+# the install proceeds. The one shape that gets past both is a script that is
+# itself named install.sh sourcing this one.
+#
+# Mangling any of it cannot produce a silent install. The worst it can do is
+# stop the installer from running, which the tests that execute this file catch
+# on their first assertion.
+case "${0##*/}" in
+    install.sh) ;;                 # executed: fall through to install_main
+    *) return 0 2>/dev/null ;;     # sourced: stop here, define nothing more
+esac
+
+install_main "$@"

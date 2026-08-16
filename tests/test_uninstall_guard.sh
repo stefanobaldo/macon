@@ -7,14 +7,13 @@
 # if nobody did. So uninstall.sh refuses while anything says the machine is
 # still holding a session, and this file is the proof of that refusal.
 #
-# uninstall.sh guards its side-effecting section behind MACON_UNINSTALL_SOURCED,
-# so sourcing it defines the functions and removes nothing.
+# uninstall.sh keeps its side-effecting section in a function that only an
+# executed run calls, so sourcing it defines the functions and removes nothing.
+# tests/test_source_inert.sh is the proof of that.
 # shellcheck source=tests/helpers.sh
 . "$TESTS_DIR/helpers.sh"
 setup_state
 
-MACON_UNINSTALL_SOURCED=1
-export MACON_UNINSTALL_SOURCED
 # shellcheck source=uninstall.sh
 . "$REPO_DIR/uninstall.sh"
 
