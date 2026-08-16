@@ -8,6 +8,8 @@ export MACON_FAILSAFE_SOURCED
 . "$MACON_LIB/common.sh"
 # shellcheck source=tests/fake-platform.sh
 . "$TESTS_DIR/fake-platform.sh"
+# shellcheck source=lib/session.sh
+. "$MACON_LIB/session.sh"
 # shellcheck source=lib/snapshot.sh
 . "$MACON_LIB/snapshot.sh"
 # shellcheck source=lib/records.sh
@@ -59,6 +61,32 @@ assert_fail "one second past the window does not" failsafe_should_run
 fake_set boot_time 242957
 assert_fail "a microsecond-shaped boot time is not treated as a boot" \
     failsafe_should_run
+
+# A live helper settles it before the clock is consulted at all. RunAtLoad
+# fires on `launchctl bootstrap` as well as at boot, and inside the first ten
+# minutes of uptime the window below cannot tell the two apart -- which is
+# exactly when `macon failsafe install`, or re-running install.sh to upgrade,
+# reaches it. The run directory is cleared at boot, so a helper polling from it
+# is proof that this is not one.
+mkdir -p "$(sess_run_dir)"
+fake_set boot_time 1699999970          # 30s of uptime: the window says "boot"
+printf '4242\n' > "$(sess_pid_path)"
+fake_set proc_4242 '/usr/local/libexec/macon/macon-helper start /var/run/macon/session.conf'
+assert_fail "a live session helper stops the failsafe even inside the window" \
+    failsafe_should_run
+
+arm
+printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
+failsafe_run
+assert_eq "0" "$(fake_call_count 'pmset')" "it touches nothing while a session is live"
+assert_ok "the live session's snapshot survives" snap_exists
+assert_ok "and the machine is left exactly as the session left it" plat_sleep_disabled
+assert_contains "$(cat "$MACON_FAILSAFE_LOG")" "not a boot" \
+    "and the log says why it stood down"
+
+rm -f "$(sess_pid_path)"
+fake_set proc_4242 ""
+assert_ok "with the session gone it is a boot again" failsafe_should_run
 
 # A boot time in the future is a clock that cannot be reasoned from.
 fake_set boot_time 1700000600

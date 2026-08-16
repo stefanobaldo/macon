@@ -25,6 +25,8 @@ if [ -z "${MACON_FAILSAFE_SOURCED:-}" ]; then
     . "$MACON_LIB/common.sh"
     # shellcheck source=lib/platform.sh
     . "$MACON_LIB/platform.sh"
+    # shellcheck source=lib/session.sh
+    . "$MACON_LIB/session.sh"
     # shellcheck source=lib/snapshot.sh
     . "$MACON_LIB/snapshot.sh"
     # shellcheck source=lib/records.sh
@@ -64,6 +66,21 @@ _failsafe_is_number() {
 # recoverable by `macon off` or by the next boot, and that asymmetry is what
 # decides the default.
 failsafe_should_run() {
+    # A live helper settles it before the clock is consulted at all: the run
+    # directory is cleared at boot, so nothing can be polling from it at a real
+    # one. Inside the first ten minutes of uptime the window below cannot tell
+    # `launchctl bootstrap` from a boot -- and `macon failsafe install`, or
+    # simply re-running install.sh to upgrade, fires RunAtLoad right there. The
+    # session would be reverted under a user who is still working, and the
+    # snapshot deleted while the helper still believes the session is live: that
+    # helper's own restore then finds nothing, and the user's later `macon off`
+    # has nothing to reapply. The snapshot is the only record of the original
+    # values that exists anywhere.
+    if sess_helper_alive; then
+        failsafe_log "skipped: a session helper is running, so this is not a boot"
+        return 1
+    fi
+
     _boot=$(plat_boot_time)
     if ! _failsafe_is_number "$_boot"; then
         failsafe_log "aborted: could not read a usable boot time ('$_boot')"
