@@ -59,6 +59,23 @@ look like.
 `macon status` leads with the version it is running, so pasting it into a bug
 report says which macon produced the rest of the output.
 
+### The screen
+
+Close the lid during a session and the screen goes dark, as it normally would.
+
+This does not happen by itself. Disabling clamshell sleep suppresses the whole
+lid-close path, and turning the display off was part of it — so a session would
+otherwise leave the panel lit under a shut lid until your `displaysleep` timer
+ran out, or for ever if you have it set to Never. macon watches the lid twice a
+second and puts the display out when it finds one shut over a lit screen.
+
+**With an external display connected, expect it to be blanked too.** macOS
+offers no way to sleep one display and not another, and this case has not been
+tested on real hardware — if you work in clamshell mode with an external
+monitor, wake it with a keypress and treat this as a rough edge. Nothing about
+the session is affected either way: the Mac stays awake, and the screen is
+cosmetic.
+
 ## How it stays safe
 
 - A **hard ceiling** is evaluated before every other signal, so nothing — not a

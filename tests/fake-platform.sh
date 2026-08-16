@@ -85,6 +85,19 @@ plat_pmset_disablesleep() {
 
 plat_sleep_disabled() { [ "$(fake_get sleep_disabled)" = "yes" ]; }
 
+plat_clamshell_closed() { [ "$(fake_get clamshell)" = "closed" ]; }
+
+plat_display_lit() { [ "$(fake_get display)" = "lit" ]; }
+
+# Recorded like the pmset writers, because "was the display blanked, and how
+# many times" is exactly what the watch has to be pinned on: firing twice for
+# one lid close is as wrong as not firing at all.
+plat_display_sleep_now() {
+    fake_record "display_sleep_now"
+    _fake_should_fail display_sleep_now && return 1
+    fake_set display dark
+}
+
 plat_power_source() { fake_get_or power_source ac; }
 
 plat_battery_pct() { fake_get_or battery_pct 100; }

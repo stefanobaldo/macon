@@ -34,6 +34,19 @@ MACON_THERMAL_TIMEOUT=20
 # continues, so the only thing this bound protects is the loop itself.
 MACON_HOOK_TIMEOUT=30
 
+# How often the lid is looked at, and how long the watch leaves the panel alone
+# after blanking it.
+#
+# The cadence cannot be the poll interval: that defaults to 300s, so a session
+# would leave the screen burning under a closed lid for up to five minutes. It
+# is a separate, much shorter clock for that reason.
+#
+# The grace exists because the panel takes about a second to fade. Without it
+# the next few reads still see a lit display and blank it again, on a screen
+# that is already on its way out.
+MACON_LID_CADENCE=0.5
+MACON_LID_GRACE=1
+
 _HELPER_TAB=$(printf '\t')
 
 # Consecutive polls seen off AC. It cannot be a shell variable: the loop reads
@@ -381,12 +394,71 @@ helper_finish() {
         "$(helper_offac_path)"
 }
 
+# When the display was last blanked. A plain variable, unlike the off-AC
+# counter, because helper_wait is called directly by the loop rather than
+# through a command substitution -- nothing here runs in a subshell whose
+# assignments would be discarded. Should that ever change, the cost is one
+# extra blank on a display that is already going dark.
+_HELPER_LAST_BLANK=0
+
+# Put the display out when the lid is shut and something has it lit.
+#
+# The condition is a LEVEL, not an edge: "the lid closed just now" would be
+# cheaper to detect, but it is wrong. Verified on real hardware -- open and
+# close the lid inside one cadence window and the flag never reads open, while
+# macOS has meanwhile turned the panel back on. An edge sees no transition and
+# leaves a fully lit screen under a closed lid, with nothing left to correct
+# it. Asking what is true right now needs no memory and cannot miss a cycle it
+# did not observe.
+#
+# This is cosmetic, not the safety invariant: a failed blank leaves a lit panel,
+# never a Mac that cannot sleep. So the result is deliberately not checked --
+# the next check retries a second later anyway, and the helper's stderr goes to
+# /dev/null, so a warning per second would be noise nobody can read.
+helper_check_display() {
+    plat_clamshell_closed || return 0
+    plat_display_lit || return 0
+
+    _now=$(macon_now)
+    if [ "$_now" -lt "$(( _HELPER_LAST_BLANK + MACON_LID_GRACE ))" ]; then
+        return 0
+    fi
+    _HELPER_LAST_BLANK=$_now
+
+    plat_display_sleep_now || :
+}
+
+# How long the next pause lasts. A separate function because the interesting
+# case cannot be reached through helper_wait without the suite actually waiting
+# out the fallback: an unreadable interval arrives here as an empty string,
+# which would make helper_wait's arithmetic an error rather than a wait. The
+# floor is the shortest value a session is allowed to carry, so falling back to
+# it cannot extend anything.
+helper_wait_seconds() {
+    if _sess_is_number "$1"; then
+        printf '%s\n' "$1"
+    else
+        printf '%s\n' "$MACON_INTERVAL_FLOOR"
+    fi
+}
+
 # The pause between polls, named rather than inlined so the suite can drive the
 # loop at its own cadence. Stubbing sleep(1) itself would also silence
 # macon_run_timeout's killer, which is the one thing in the loop that must keep
 # working while the loop is under test.
+#
+# The pause is slept in slices so the lid can be watched at a human cadence
+# without dragging the sampling interval down with it: a session samples
+# thermals every 300s and looks at the lid every half second, from one loop.
+#
+# The bound is a deadline rather than a slice count, so a slow check cannot
+# stretch the interval it is running inside.
 helper_wait() {
-    sleep "$1"
+    _until=$(( $(macon_now) + $(helper_wait_seconds "$1") ))
+    while [ "$(macon_now)" -lt "$_until" ]; do
+        helper_check_display
+        sleep "$MACON_LID_CADENCE"
+    done
 }
 
 helper_loop() {
