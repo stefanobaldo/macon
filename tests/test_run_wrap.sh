@@ -66,6 +66,10 @@ assert_fail "an unknown option before -- is still refused" \
 MACON_ARM_TRIES=3
 
 MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
+# Paired with the line above: without it cli_failsafe_loaded asks the real
+# launchd about the real daemon, and these assertions would then depend on
+# whether this machine happens to have macon installed.
+MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
 
 TMPDIR="$MACON_STATE/tmp"

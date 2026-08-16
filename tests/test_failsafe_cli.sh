@@ -142,13 +142,32 @@ assert_eq "/opt/macon-libexec" \
 # --- status -----------------------------------------------------------------
 
 rm -f "$MACON_FS_PLIST"
-OUT=$(cli_cmd_failsafe status)
+MACON_FS_LOADED=no
+OUT=$(cli_cmd_failsafe status); RC=$?
 assert_contains "$OUT" "absent" "status reports an uninstalled failsafe"
+assert_eq "1" "$RC" "and reports it as a failure"
+
 : > "$MACON_FS_PLIST"
-OUT=$(cli_cmd_failsafe status)
+MACON_FS_LOADED=yes
+OUT=$(cli_cmd_failsafe status); RC=$?
 assert_contains "$OUT" "installed" "status reports an installed failsafe"
 assert_contains "$OUT" "$MACON_FS_PLIST" "and names the file"
+assert_eq "0" "$RC" "and exits zero for the one healthy state"
 
+# The state this check exists for, and the one the file test could not see: the
+# plist is present, parses, and launchd has never been told about it. It used to
+# be reported as a healthy install, which is what let a machine believe it had a
+# boot restore it did not have.
+MACON_FS_LOADED=no
+OUT=$(cli_cmd_failsafe status); RC=$?
+assert_contains "$OUT" "NOT LOADED" "a plist launchd has not loaded is not 'installed'"
+assert_eq "1" "$RC" "and it is a failure rather than a variant of success"
+# install.sh decides with `case $out in installed*)`, so the wording is load
+# bearing: this state must not start with the word the installer accepts.
+assert_fail "the installer's own test does not accept it" \
+    sh -c "case \"$OUT\" in installed*) exit 0 ;; esac; exit 1"
+
+MACON_FS_LOADED=yes
 # The verb defaults to the one that changes nothing.
 OUT=$(cli_cmd_failsafe)
 assert_contains "$OUT" "installed" "no verb means status"
@@ -174,8 +193,30 @@ assert_fail "and so is one that merely looks like install" try_failsafe INSTALL
 # records what it was asked to run and does nothing, which is also how "the
 # refusal never reached the removal" is asserted.
 SUDO_LOG="$MACON_STATE/sudo"
+#
+# `rm` is the one command run for real. The verb no longer trusts rm's exit
+# status -- which is 0 for a file it did not remove -- and re-checks that the
+# plist is gone, so a shim that only recorded would make the success path
+# unreachable and every removal look like a failure. The launchctl calls stay
+# inert, which is the part that needs a password.
 # shellcheck disable=SC2317,SC2329
-sudo() { printf '%s\n' "$*" >> "$SUDO_LOG"; }
+#
+# SUDO_RM_INERT makes the removal record itself and change nothing, which is
+# what a `sudo rm` that failed looks like from the caller: rm exits 0 for a file
+# it did not remove, so that case is indistinguishable by status alone.
+SUDO_RM_INERT=0
+# shellcheck disable=SC2317,SC2329
+sudo() {
+    printf '%s\n' "$*" >> "$SUDO_LOG"
+    case "${1:-}" in
+        rm)
+            if [ "$SUDO_RM_INERT" -eq 0 ]; then
+                shift
+                rm "$@"
+            fi
+            ;;
+    esac
+}
 
 quiet_remove() {
     : > "$SUDO_LOG"
@@ -233,6 +274,27 @@ assert_contains "$(cat "$SUDO_LOG")" "rm -f $MACON_FS_PLIST" \
 # An unrecognised flag must not be read as consent.
 assert_fail "an unknown flag on remove is refused" quiet_remove --yes-really
 assert_eq "" "$(cat "$SUDO_LOG")" "and removes nothing"
+clear_blockers
+
+# A removal that did not remove. `rm -f` exits 0 for a file it left in place, so
+# the verb used to print "boot failsafe removed." over a plist still on disk --
+# and the caller most likely to act on that sentence is a user about to trust
+# the machine to a night with no boot restore.
+clear_blockers
+: > "$MACON_FS_PLIST"
+SUDO_RM_INERT=1
+: > "$SUDO_LOG"
+OUT=$( ( cli_cmd_failsafe remove ) 2>&1 )
+RC=$?
+SUDO_RM_INERT=0
+assert_eq "1" "$RC" "a removal that removed nothing fails"
+assert_contains "$OUT" "still installed" "and says the failsafe is still there"
+assert_contains "$OUT" "$MACON_FS_PLIST" "and names the file that would not go"
+assert_fail "and never announces a removal" \
+    sh -c "case \"$OUT\" in *'boot failsafe removed'*) exit 0 ;; esac; exit 1"
+assert_ok "the attempt did reach rm" \
+    sh -c "grep -q 'rm -f' '$SUDO_LOG'"
+rm -f "$MACON_FS_PLIST"
 clear_blockers
 
 teardown_state

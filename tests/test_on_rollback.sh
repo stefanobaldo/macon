@@ -26,6 +26,10 @@ MACON_ARM_TRIES=3
 
 # Nothing in this file may touch the real LaunchDaemon path.
 MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
+# Paired with the line above: without it cli_failsafe_loaded asks the real
+# launchd about the real daemon, and these assertions would then depend on
+# whether this machine happens to have macon installed.
+MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
 
 # The hand-over descriptor is built under TMPDIR; pointing that at the test's
@@ -186,6 +190,19 @@ rm -f "$MACON_FS_PLIST"
 assert_fail "on refuses to start without the boot failsafe" try_on 8
 assert_eq "0" "$(fake_call_count 'pmset')" "the failsafe refusal touched nothing"
 : > "$MACON_FS_PLIST"
+
+# The plist being on disk is not the same fact as launchd having the job, and
+# arming on the weaker one is arming with no boot restore behind it. Refusing
+# is the safe direction here: a false refusal costs a session that does not
+# start, a false pass costs a Mac that reboots after a panic still unable to
+# sleep.
+clean_machine
+MACON_FS_LOADED=no
+assert_fail "on refuses when launchd has not loaded the failsafe" try_on 8
+assert_eq "0" "$(fake_call_count 'pmset')" "that refusal touched nothing either"
+assert_ok "--no-failsafe still overrides it" try_on 8 --no-failsafe
+kill_stub
+MACON_FS_LOADED=yes
 
 # A machine already modified with no snapshot to explain it: the original
 # values are gone and macOS cannot reconstruct them, so guessing is worse than
