@@ -124,6 +124,24 @@ assert_fail "a newline in the warn hook is rejected" \
     cli_parse_on 8 --hook-warn 'true
 hard_ceiling=99'
 
+# --- the usage block --------------------------------------------------------
+#
+# Every subcommand the dispatcher accepts must appear in usage, or the CLI grows
+# a verb nobody can discover. Same drift guard tests/test_docs.sh applies to the
+# README, pointed at the other place the surface is written down.
+USAGE=$(cli_usage)
+for _c in on run off status report saved log failsafe version help; do
+    assert_contains "$USAGE" "macon $_c" "usage lists the '$_c' subcommand"
+done
+
+# `|` is the shell pipe character and this block is a list of runnable commands,
+# so `macon version | help` reads as piping one into the other. Alternatives get
+# braces here -- `failsafe {install|remove|status}` -- and a bare pipe between
+# two subcommands is the shape that broke that rule.
+printf '%s\n' "$USAGE" > "$MACON_STATE/usage.txt"
+assert_fail "no subcommand line alternates with a bare pipe" \
+    grep -Eq '^  macon [a-z]+ \| ' "$MACON_STATE/usage.txt"
+
 # --- the copyright notice ---------------------------------------------------
 #
 # LICENSE is authoritative and the string in bin/macon is a courtesy copy, which
