@@ -20,6 +20,10 @@ export MACON_CLI_SOURCED
 . "$REPO_DIR/bin/macon"
 
 MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
+# Paired with the line above: without it cli_failsafe_loaded asks the real
+# launchd about the real daemon, and these assertions would then depend on
+# whether this machine happens to have macon installed.
+MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
 MACON_ARM_TRIES=3
 MACON_FAKE_NOW=1700000000
