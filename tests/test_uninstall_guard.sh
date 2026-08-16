@@ -154,6 +154,41 @@ assert_contains "$OUT" "nothing else was removed" "and says the components were 
 assert_contains "$OUT" "launchctl bootout" "and gives the command to finish by hand"
 rm -f "$MACON_FS_PLIST"
 
+# --- handing --force on to the verb that does the removal -------------------
+#
+# `macon failsafe remove` refuses while this Mac still looks like it is holding
+# a session -- the same three blockers this script checks. uninstall.sh --force
+# reaches that verb with those blockers deliberately present, having already
+# told the user it is going ahead, so the decision has to travel with the call:
+# without the passthrough the --force path stops at the verb it invokes.
+
+FS_PREFIX="$MACON_STATE/fs-prefix"
+FS_ARGS="$MACON_STATE/fs-args"
+mkdir -p "$FS_PREFIX/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$FS_ARGS" > "$FS_PREFIX/bin/macon"
+chmod 755 "$FS_PREFIX/bin/macon"
+_saved_prefix=$MACON_PREFIX
+MACON_PREFIX=$FS_PREFIX
+
+: > "$FS_ARGS"
+assert_ok "the removal runs" uninstall_failsafe_remove 0
+assert_eq "failsafe remove" "$(cat "$FS_ARGS")" \
+    "an ordinary uninstall calls the verb plainly"
+
+: > "$FS_ARGS"
+assert_ok "and runs under --force too" uninstall_failsafe_remove 1
+assert_eq "failsafe remove --force" "$(cat "$FS_ARGS")" \
+    "--force is passed through to it"
+
+# The CLI may not be there at all: it dies sourcing its libraries if any are
+# missing, which is the half-broken installation someone reaches for the
+# uninstaller to clean up. The direct removal below it is what covers that.
+MACON_PREFIX="$MACON_STATE/no-such-prefix"
+: > "$FS_ARGS"
+assert_ok "a missing CLI is not a failure" uninstall_failsafe_remove 1
+assert_eq "" "$(cat "$FS_ARGS")" "and nothing is invoked"
+MACON_PREFIX=$_saved_prefix
+
 # --- what it leaves behind --------------------------------------------------
 
 OUT=$(uninstall_state_note)

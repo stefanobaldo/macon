@@ -953,6 +953,44 @@ cli_failsafe_plist_for_install() {
         "$MACON_LIB" "$MACON_LIBEXEC"
 }
 
+# Everything that makes removing the boot failsafe unsafe right now, as a word
+# list.
+#
+# Deliberately the same three conditions, in the same three words, that
+# uninstall.sh already refuses on. This verb is what uninstall.sh calls to
+# perform the removal, so a second dialect here would be a second answer to the
+# same question -- and the project's own policy is already stated on the other
+# side of it: cli_preflight refuses to ARM a session without the failsafe.
+cli_failsafe_blockers() {
+    _b=""
+    sess_helper_alive && _b="$_b session"
+    plat_sleep_disabled && _b="$_b sleep-disabled"
+    snap_exists && _b="$_b snapshot"
+    printf '%s\n' "${_b# }"
+}
+
+cli_explain_failsafe_blockers() {
+    macon_warn "refusing to remove the boot failsafe -- this Mac may be left unable to sleep:"
+    # Intentionally unquoted: $1 is the word list cli_failsafe_blockers built.
+    # shellcheck disable=SC2086
+    for _r in $1; do
+        case "$_r" in
+            session)
+                macon_warn "  - a session is still running ($(sess_pid_path))" ;;
+            sleep-disabled)
+                macon_warn "  - clamshell sleep is DISABLED right now" ;;
+            snapshot)
+                macon_warn "  - the power snapshot is still on disk: $(snap_path)" ;;
+        esac
+    done
+    macon_warn "the boot failsafe is the only thing that clears disablesleep after a"
+    macon_warn "panic or a power loss. Removed now, the next reboot leaves this Mac"
+    macon_warn "unable to sleep with nothing left to undo it."
+    macon_warn "run 'macon off' first, then remove it. To remove it anyway:"
+    macon_warn "  macon failsafe remove --force"
+    return 0
+}
+
 cli_cmd_failsafe() {
     case "${1:-status}" in
         install)
@@ -968,6 +1006,27 @@ cli_cmd_failsafe() {
             printf 'boot failsafe installed.\n'
             ;;
         remove)
+            # The one door that was left unlocked: cli_preflight refuses to arm
+            # without the failsafe and uninstall.sh refuses to remove macon
+            # while a session holds, but the verb that actually strips the boot
+            # failsafe off the machine checked nothing. Run mid-session, a panic
+            # at 03:00 then reboots into disablesleep with nothing left to clear
+            # it -- the permanent outcome this tool exists to prevent.
+            #
+            # --force exists because uninstall.sh reaches this verb with those
+            # blockers deliberately present; without the passthrough,
+            # `uninstall.sh --force` would stop here.
+            _fs_force=0
+            case "${2:-}" in
+                --force) _fs_force=1 ;;
+                '') ;;
+                *) macon_die "usage: macon failsafe remove [--force]" ;;
+            esac
+            _fs_blockers=$(cli_failsafe_blockers)
+            if [ -n "$_fs_blockers" ] && [ "$_fs_force" -eq 0 ]; then
+                cli_explain_failsafe_blockers "$_fs_blockers"
+                return 1
+            fi
             sudo launchctl bootout system "$MACON_FS_PLIST" 2>/dev/null ||
                 sudo launchctl unload -w "$MACON_FS_PLIST" 2>/dev/null || :
             sudo rm -f "$MACON_FS_PLIST"
