@@ -204,6 +204,37 @@ assert_ok "--no-failsafe still overrides it" try_on 8 --no-failsafe
 kill_stub
 MACON_FS_LOADED=yes
 
+# --- the snapshot is taken fresh on every arm --------------------------------
+#
+# `macon off` and the boot failsafe consume the snapshot; a session that reaches
+# its deadline, and the orphan heal, restore and leave it behind. So the
+# ORDINARY endings leave a snapshot that the next arm would otherwise reuse, and
+# a user who changed their power settings between two nights had those changes
+# reverted when the second one ended -- restored to values that were correct for
+# a night already over.
+#
+# The machine below is clean and holds disksleep 30; the snapshot on disk still
+# says 10, exactly as a previous night left it.
+clean_machine
+fake_set disksleep 30
+assert_ok "a clean machine whose values changed still arms" try_on 8
+kill_stub
+assert_eq "sleep 1 disksleep 30 powernap 1" "$(snap_restore_args)" \
+    "arming re-snapshots the machine as it is now, not as a past night left it"
+
+# The other half of the same change, and the reason re-reading is safe at all:
+# snap_save REFUSES on a machine that already looks modified, so this cannot
+# record zeros as though they were somebody's real configuration. Here that
+# tightens a case that used to pass -- modified, but not an orphan, because the
+# heartbeat is too fresh to declare one. It used to arm straight over the top.
+clean_machine
+fake_set sleep_disabled yes
+printf '%s\n' "$MACON_FAKE_NOW" > "$(sess_heartbeat_path)"
+assert_fail "on refuses to arm over a modified machine it cannot explain" try_on 8
+assert_eq "0" "$(fake_call_count 'pmset')" "and that refusal touched nothing"
+assert_eq "sleep 1 disksleep 10 powernap 1" "$(snap_restore_args)" \
+    "the refusal left the existing snapshot untouched"
+
 # A machine already modified with no snapshot to explain it: the original
 # values are gone and macOS cannot reconstruct them, so guessing is worse than
 # refusing.

@@ -494,13 +494,32 @@ cli_preflight() {
         fi
     fi
 
-    if ! snap_exists; then
-        if ! snap_save; then
-            macon_die "no snapshot exists and the machine already looks modified; restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
-        fi
-        printf 'saved original power state to %s\n' "$(snap_path)"
-        printf 'plist backup in %s\n' "$(snap_backup_plists)"
+    # Snapshotted on EVERY arm, not only when no snapshot exists.
+    #
+    # The endings differ in whether they consume the snapshot: `macon off` and
+    # the boot failsafe delete it, while a session that reaches its deadline and
+    # the orphan heal above both restore and leave it behind. So the automatic
+    # endings -- the ordinary ones -- leave a snapshot that the next arm used to
+    # reuse. A user who changed their power settings between two sessions had
+    # those changes silently reverted when the second one ended, restoring
+    # values that were correct for a night that is over.
+    #
+    # Re-reading is safe precisely because snap_save is not merely a write: it
+    # refuses when snap_looks_active, which is the case this could otherwise get
+    # wrong -- recording zeros as though they were someone's real configuration.
+    # That guard is what makes "the machine is clean, so what it holds now IS
+    # the value to restore to" a true statement rather than an assumption.
+    #
+    # It also tightens a case that used to pass: a modified machine that is not
+    # an orphan (no live helper, but a heartbeat too fresh to declare one) used
+    # to arm straight over the top, because a snapshot existed and nothing
+    # looked again. It now refuses, which is the right direction for a machine
+    # in a state macon cannot explain.
+    if ! snap_save; then
+        macon_die "the machine already looks modified and no fresh snapshot could be taken; run 'macon off', or restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
     fi
+    printf 'saved original power state to %s\n' "$(snap_path)"
+    printf 'plist backup in %s\n' "$(snap_backup_plists)"
 }
 
 # Builds the hand-over descriptor from the OPT_* set cli_parse_on published, and
