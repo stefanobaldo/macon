@@ -247,6 +247,59 @@ assert_eq "80" "$(cut -f4 < "$(rec_samples_path "$ID")")" \
 # shellcheck source=lib/platform.sh
 plat_thermal_pressure() { _v=$(fake_get thermal); printf '%s\n' "${_v:-Nominal}"; }
 
+# --- a descriptor that stops being readable mid-session ---------------------
+#
+# The descriptor is validated once on arrival and then re-read at every poll,
+# and it is not a constant: a failed sess_set can truncate it, and `macon off`
+# deletes it -- including after giving up on a helper that would not die. Every
+# field then reads EMPTY, because sess_get answers a missing file with success
+# and no output, and an empty operand makes `[ -ge ]` exit 2 on bash 3.2 rather
+# than return false. Without re-validation every rung of macon_decide falls
+# through and the poll answers `continue` for ever, while the helper is alive,
+# sess_orphaned is false and `macon status` reports a healthy session.
+
+setup_desc
+MACON_FAKE_NOW=1700000600
+assert_eq "continue" "$(helper_iterate "$D")" "an intact descriptor is evaluated normally"
+
+setup_desc
+rm -f "$D"
+assert_eq "end:invalid-descriptor" "$(helper_iterate "$D" 2>/dev/null)" \
+    "a descriptor that has been deleted ends the session"
+
+setup_desc
+: > "$D"
+assert_eq "end:invalid-descriptor" "$(helper_iterate "$D" 2>/dev/null)" \
+    "an empty descriptor ends the session"
+
+# Truncated rather than gone: the file is still there and still parses, but the
+# ceiling is no longer in it. This is the shape a partial rewrite leaves behind.
+setup_desc
+grep -v '^hard_ceiling=' "$D" > "$D.cut" && mv "$D.cut" "$D"
+assert_eq "end:invalid-descriptor" "$(helper_iterate "$D" 2>/dev/null)" \
+    "a descriptor that lost its ceiling ends the session"
+
+# A field that is present but unusable is the same class: an over-long value is
+# not rejected by a comparison, it makes the comparison exit 2.
+setup_desc
+sess_set "$D" strikes 99999999999999999999
+assert_eq "end:invalid-descriptor" "$(helper_iterate "$D" 2>/dev/null)" \
+    "a descriptor whose strike count cannot be compared ends the session"
+
+# Ending is only the answer if it really ends: the loop has to reach
+# helper_finish and the restore, from a descriptor it can no longer read.
+setup_desc
+fake_set sleep_disabled yes
+printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
+fake_reset_calls
+rm -f "$D"
+helper_finish "$D" invalid-descriptor 2>/dev/null
+assert_fail "an unreadable descriptor does not cost the restore" plat_sleep_disabled
+assert_eq "1" "$(fake_call_count 'pmset_apply_ac')" \
+    "and the restore is still the single call it has to be"
+assert_contains "$(fake_calls)" "pmset_apply_ac sleep 1 disksleep 10 powernap 1" \
+    "with the saved values"
+
 # --- the poll order, through the loop ---------------------------------------
 
 setup_desc
@@ -407,6 +460,57 @@ helper_wait() {
 helper_loop "$D"
 assert_eq "1" "$(wc -l < "$MACON_STATE/loop-c.warned" | tr -d ' ')" \
     "the warn hook fires once, not at every poll inside the window"
+
+# An extension the descriptor could not be updated with. Granting it again at
+# every poll for the rest of the night is the alternative, from a file the loop
+# has just been told it cannot write; ending is the direction the invariant
+# points, and the restore is what proves it ended.
+setup_desc
+sess_set "$D" policy extend
+sess_set "$D" extend_by 600
+sess_set "$D" completion sentinel
+sess_set "$D" sentinel_path "$MACON_STATE/loop-d.done"
+rm -f "$MACON_STATE/loop-d.done"
+arm_snapshot
+MACON_FAKE_NOW=1700003600
+mkdir -p "$D.tmp"
+_polls=0
+# shellcheck disable=SC2317,SC2329  # the loop under test calls this
+helper_wait() {
+    _polls=$((_polls + 1))
+    # Only reached if the failed write did NOT end the session. Ending the
+    # session here too keeps a regression a failed assertion rather than a
+    # suite that never returns.
+    : > "$MACON_STATE/loop-d.done"
+}
+helper_loop "$D"
+rmdir "$D.tmp" 2>/dev/null || :
+assert_eq "0" "$_polls" "a failed extension ends the session rather than polling on"
+assert_fail "and the machine is left able to sleep" plat_sleep_disabled
+assert_fail "and the descriptor is cleared on the way out" test -f "$D"
+
+# The descriptor disappearing mid-session, driven through the real loop. This is
+# `macon off` against a helper that would not die, and the state it used to
+# leave behind: a root helper polling for ever on `sleep ""` (~2ms an
+# iteration), recreating the heartbeat, keeping sess_helper_alive true and
+# refusing every later `macon on`. The loop must end instead, and the restore
+# must happen on the way out.
+setup_desc
+arm_snapshot
+MACON_FAKE_NOW=1700000600
+_polls=0
+# shellcheck disable=SC2317,SC2329  # the loop under test calls this
+helper_wait() {
+    _polls=$((_polls + 1))
+    rm -f "$D"
+    # A loop that did not end would come back here for ever, so the tenth visit
+    # gives up: this file has to fail rather than hang.
+    [ "$_polls" -lt 10 ] || _assert_fail "the loop kept polling with no descriptor"
+}
+helper_loop "$D"
+assert_eq "1" "$_polls" "the loop ends at the first poll after its descriptor is gone"
+assert_fail "and the machine is left able to sleep" plat_sleep_disabled
+assert_fail "with the run files cleared" test -f "$(sess_heartbeat_path)"
 
 unset MACON_FAKE_NOW
 teardown_state
