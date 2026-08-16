@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The screen no longer stays lit under a closed lid. Disabling clamshell sleep
+  suppresses the whole lid-close path, and turning the display off was part of
+  it, so a session left the panel burning until the user's `displaysleep` timer
+  expired — or indefinitely where that is set to Never. The helper now watches
+  the lid twice a second and blanks the display whenever it finds one shut over
+  a lit screen. An external display connected in clamshell mode is blanked with
+  it; that case is untested on real hardware.
+
 ### Added
 
 - `macon status` reports the version it is running, as its first row. The bug

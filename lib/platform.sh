@@ -63,6 +63,49 @@ plat_sleep_disabled() {
     ioreg -r -k SleepDisabled 2>/dev/null | grep -q '"SleepDisabled" = Yes'
 }
 
+# Is the lid shut? `AppleClamshellState` is the Hall sensor, and it flips at
+# roughly a centimetre of lid gap -- verified: it turns Yes in the same 0.2s
+# sample in which macOS turns the display off and begins clamshell sleep.
+# Reacting to it therefore reproduces the system's own trigger point rather
+# than approximating it. A Mac with no lid has no such key and reads open,
+# which is the answer that makes the caller do nothing.
+#
+# `-d 1` bounds the output: unlike plat_sleep_disabled, which runs once per
+# session, this runs twice a second for a whole night.
+plat_clamshell_closed() {
+    ioreg -r -k AppleClamshellState -d 1 -w0 2>/dev/null |
+        grep -q '"AppleClamshellState" = Yes'
+}
+
+# Is a real display lit? Every framebuffer publishes `IOMFBBrightnessLevel`,
+# but only one of them is attached to a panel: on the verified machine the
+# built-in display reads its true backlight level while two unused framebuffers
+# sit at a constant 65536 whether the screen is on or off. Counting those would
+# make "lit" permanently true, and the caller would blank the display in a loop
+# for ever.
+#
+# `DisplayAttributes` carrying `ProductAttributes` is what separates them -- it
+# is the block describing an actual attached panel. A reading that cannot be
+# taken at all reports NOT lit, so an unreadable machine makes macon do nothing
+# rather than blank a display it cannot observe.
+plat_display_lit() {
+    [ "$(ioreg -r -k IOMFBBrightnessLevel -d 1 -w0 2>/dev/null | awk '
+        function flush() { if (attrs && level != "" && level + 0 != 0) lit = 1 }
+        /^\+-o /                                   { flush(); attrs = 0; level = "" }
+        /"DisplayAttributes" = .*ProductAttributes/ { attrs = 1 }
+        /"IOMFBBrightnessLevel" = /                 { level = $NF }
+        END                                        { flush(); print (lit ? 1 : 0) }
+    ')" = "1" ]
+}
+
+# Turn the display off now. An ACTION, not a setting: it changes no power value,
+# so there is nothing for the snapshot to record and nothing for a restore to
+# undo. That is the whole reason this is the mechanism -- it cannot add a way to
+# leave the Mac unable to sleep.
+plat_display_sleep_now() {
+    _plat_root_run pmset displaysleepnow
+}
+
 plat_power_source() {
     if pmset -g batt 2>/dev/null | grep -q "'AC Power'"; then
         printf 'ac\n'

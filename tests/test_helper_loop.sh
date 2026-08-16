@@ -387,6 +387,93 @@ assert_eq "1" "$(fake_call_count 'pmset_apply_ac')" \
 assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
     "an unusable session id writes no half-empty index row"
 
+# --- the display watch ------------------------------------------------------
+#
+# What `disablesleep` suppresses is the whole clamshell path, and turning the
+# display off was part of it. The machine stays awake as intended and the panel
+# stays lit under a shut lid -- for as long as the user's `displaysleep` timer
+# takes, or for ever where that is Never.
+#
+# The condition is a level rather than an edge because an edge is provably not
+# enough; the flick case below is the reason, observed on real hardware.
+
+watch_state() {
+    fake_reset_calls
+    fake_set clamshell "$1"
+    fake_set display "$2"
+}
+
+MACON_FAKE_NOW=1700000000
+_HELPER_LAST_BLANK=0
+
+watch_state open lit
+helper_check_display
+assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
+    "an open lid is left alone, however lit the screen is"
+
+watch_state closed dark
+helper_check_display
+assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
+    "a shut lid over a dark panel is left alone"
+
+watch_state closed lit
+helper_check_display
+assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
+    "a lit panel under a shut lid is blanked"
+
+# The fade takes about a second, so the reads that land inside it still see a
+# lit panel. Blanking again there would fire on a screen that is already going
+# out, once per cadence, for as long as the fade lasts.
+watch_state closed lit
+helper_check_display
+assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
+    "a panel still fading is not blanked again inside the grace"
+
+# --- the flick --------------------------------------------------------------
+#
+# Verified by hand on the real machine: open the lid past the sensor and close
+# it again inside one cadence window, and every read in that window says the lid
+# is SHUT -- while macOS has meanwhile turned the panel back on. Two of these in
+# a six second stretch produced two fully lit screens under a closed lid.
+#
+# Note what the fake is scripted with: clamshell never reads open at any point
+# here. An edge-triggered watch sees no transition and does nothing, which is
+# exactly the defect. The level condition is true again the moment the panel
+# lights, and that is all it needs.
+MACON_FAKE_NOW=1700000002
+watch_state closed lit
+helper_check_display
+assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
+    "a panel relit under a lid that never read open is blanked again"
+
+# --- the pause --------------------------------------------------------------
+#
+# The interval is what the session samples on; the lid is watched on its own,
+# much shorter clock. A watch riding the poll interval would leave the screen
+# burning for up to five minutes on the default 300s session.
+assert_eq "300" "$(helper_wait_seconds 300)" "a readable interval is waited out as given"
+assert_eq "$MACON_INTERVAL_FLOOR" "$(helper_wait_seconds '')" \
+    "an unreadable interval falls back to the floor, never to no wait at all"
+assert_eq "$MACON_INTERVAL_FLOOR" "$(helper_wait_seconds 'abc')" \
+    "and so does one that is not a number"
+
+# The real pause, on the real clock: one second of waiting has to contain
+# several looks at the lid, not one.
+unset MACON_FAKE_NOW
+MACON_LID_CADENCE=0.2
+watch_state closed dark
+_looks=0
+# shellcheck disable=SC2317,SC2329  # helper_wait calls this
+helper_check_display() { _looks=$((_looks + 1)); }
+_t0=$(date +%s)
+helper_wait 1
+_elapsed=$(( $(date +%s) - _t0 ))
+
+assert_ok "a one second pause lasts at least a second" [ "$_elapsed" -ge 1 ]
+assert_ok "and looks at the lid more than once while it waits" [ "$_looks" -ge 2 ]
+
+MACON_LID_CADENCE=0.5
+
 # --- the loop itself --------------------------------------------------------
 #
 # helper_wait is the loop's only pause, and stubbing it is what lets a night
