@@ -90,4 +90,59 @@ printf '#!/bin/sh\nprintf "boom\\n" >&2\nexit 1\n' > "$SHIM/sysctl"
 chmod 755 "$SHIM/sysctl"
 assert_eq "" "$(boot_time_via_shim 2>/dev/null)" "a sysctl that fails parses to nothing"
 
+# --- the escalation decision ------------------------------------------------
+#
+# The two pmset writers are the only functions in this project that must behave
+# differently depending on who is running them, and both answers are dangerous
+# in opposite directions: an unprivileged CLI that does not escalate silently
+# fails to arm (pmset refuses AND exits 0, so nothing downstream notices), while
+# a root helper that DOES escalate asks for a password at 03:00 with nobody
+# there and leaves the Mac unable to sleep.
+#
+# uid 0 is unreachable from a suite that does not run as root, so the decision
+# is asserted directly instead of by reaching the branch -- the same shape
+# helper_needs_sudo is tested with, and for the same reason.
+assert_fail "root runs privileged commands directly" plat_needs_sudo 0
+assert_ok "an unprivileged user escalates" plat_needs_sudo 501
+assert_ok "any non-zero uid escalates, not just the usual one" plat_needs_sudo 1
+
+# The wiring, not just the decision: a shim proves the mutating writers
+# actually route through it. Without this the predicate could be correct and
+# unused, which is what it was before this test existed.
+cat > "$SHIM/sudo" <<'EOF'
+#!/bin/sh
+printf 'sudo %s\n' "$*"
+EOF
+cat > "$SHIM/pmset" <<'EOF'
+#!/bin/sh
+printf 'direct %s\n' "$*"
+EOF
+cat > "$SHIM/id" <<'EOF'
+#!/bin/sh
+printf '%s\n' "${MACON_FAKE_UID:-501}"
+EOF
+chmod 755 "$SHIM/sudo" "$SHIM/pmset" "$SHIM/id"
+
+# Same shape, and the same reason, as boot_time_via_shim above.
+# shellcheck disable=SC2030,SC2031
+pmset_via_shim() ( PATH="$SHIM:$PATH"; export PATH; "$@" )
+
+MACON_FAKE_UID=501
+export MACON_FAKE_UID
+assert_eq "sudo pmset -a disablesleep 1" \
+    "$(pmset_via_shim plat_pmset_disablesleep 1)" \
+    "an unprivileged disablesleep write goes through sudo"
+assert_eq "sudo pmset -c sleep 0 disksleep 0" \
+    "$(pmset_via_shim plat_pmset_apply_ac sleep 0 disksleep 0)" \
+    "an unprivileged timer write goes through sudo"
+
+MACON_FAKE_UID=0
+assert_eq "direct -a disablesleep 0" \
+    "$(pmset_via_shim plat_pmset_disablesleep 0)" \
+    "root's disablesleep write never invokes sudo"
+assert_eq "direct -c sleep 1 disksleep 10" \
+    "$(pmset_via_shim plat_pmset_apply_ac sleep 1 disksleep 10)" \
+    "root's timer write never invokes sudo"
+unset MACON_FAKE_UID
+
 teardown_state
