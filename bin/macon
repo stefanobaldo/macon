@@ -104,7 +104,9 @@ usage:
   macon saved                     show the stored power snapshot
   macon log [--session ID]        show a session's raw samples
   macon failsafe {install|remove|status}
-  macon version | help
+                                  install, remove or check the boot failsafe
+  macon version                   print the version and licence
+  macon help                      print this message (also --help, -h)
 
 options for on and run:
   --max <hours>            hard ceiling (default: the requested duration;
