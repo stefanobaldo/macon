@@ -53,6 +53,15 @@ restores real settings. It requires macon to be installed, requires AC power, an
 will prompt for sudo. It captures a baseline before mutating and fails if the
 machine does not return to it.
 
+Everything under `tests/` except `tests/real/` runs against
+`tests/fake-platform.sh` and cannot change a power setting. `tests/run.sh` globs
+`tests/test_*.sh` only, so it never descends into `tests/real/` — reaching the
+mutating suite takes running a different script *and* setting the variable.
+Run it when you touch the platform layer, the activation ladder, the boot
+failsafe or the snapshot; those are the paths the fake cannot tell you the truth
+about. It restores from an `EXIT` trap, so an assertion that fails mid-cycle
+still hands the machine back its ability to sleep.
+
 ## Developer Certificate of Origin
 
 Every commit must carry a `Signed-off-by` line (`git commit -s`), certifying the
