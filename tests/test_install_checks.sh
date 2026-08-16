@@ -190,16 +190,85 @@ assert_eq "1" "$_rc" "the installer refuses over a machine that looks modified"
 assert_contains "$OUT" "refusing to install" "and says so"
 assert_eq "" "$(cat "$GUARD/sudo-calls")" "without asking for a password first"
 
+# The prefix here is under a temporary directory this user owns, so it is also
+# an unsafe prefix -- both overrides are needed to reach the install itself.
 : > "$GUARD/sudo-calls"
-OUT=$(run_installer --force) || :
+OUT=$(run_installer --force --allow-unsafe-prefix) || :
 assert_contains "$(cat "$GUARD/sudo-calls")" "--install-files" \
-    "--force carries the install past the refusal"
+    "the overrides carry the install past both refusals"
 assert_contains "$OUT" "--force given" "having said what it is overriding"
 
 _rc=0
 OUT=$(run_installer --wobble) || _rc=$?
 assert_eq "1" "$_rc" "an unknown flag is refused rather than ignored"
 assert_contains "$OUT" "usage:" "with the usage line"
+
+# --- a prefix whose parents are not root's ----------------------------------
+#
+# The chown the privileged half does covers the macon tree. It cannot cover the
+# directories ABOVE it, and that is where the boundary is: `macon on` starts
+# $PREFIX/libexec/macon/macon-helper with `sudo nohup`, so anything that can
+# write to a parent can swap that directory for its own and have its code run as
+# root the next time the user types their password. On a Homebrew Intel Mac
+# /usr/local is exactly that -- user-owned -- so this is the normal state of a
+# real machine rather than a hypothetical.
+
+assert_ok "a root-owned system directory is root-only" install_dir_is_root_only /usr
+assert_ok "and so are the ones this install mirrors" install_dir_is_root_only /usr/libexec
+assert_fail "a directory this user owns is not" install_dir_is_root_only "$MACON_STATE"
+assert_ok "a directory that does not exist yet is not a finding" \
+    install_dir_is_root_only "$MACON_STATE/never-created"
+
+# The permission half, on its own: a root-owned directory that is group- or
+# world-writable cannot be created by a suite that is not root, so the clause
+# that catches one is asserted through the pure function. Group write is not a
+# lesser case -- `admin` is every administrator account on a Mac, and a member
+# of it can replace the helper without ever being root.
+assert_ok "0755 is root-only" install_mode_is_root_only 755
+assert_ok "and so is 0700" install_mode_is_root_only 700
+assert_ok "and a sticky root-only directory" install_mode_is_root_only 1755
+assert_fail "0775 is writable by the group" install_mode_is_root_only 775
+assert_fail "0757 is writable by everyone" install_mode_is_root_only 757
+assert_fail "and 0777 by both" install_mode_is_root_only 777
+assert_fail "1777 too, sticky bit or not" install_mode_is_root_only 1777
+assert_fail "an unreadable mode is refused rather than assumed" \
+    install_mode_is_root_only ""
+assert_fail "and so is one that is not octal at all" install_mode_is_root_only drwx
+
+# Wired into the directory check, on a real root-owned directory that macOS
+# itself leaves world-writable.
+assert_ok "/Users/Shared is there to test against" test -d /Users/Shared
+assert_fail "a root-owned but world-writable directory is not root-only" \
+    install_dir_is_root_only /Users/Shared
+
+UNSAFE=$(install_unsafe_dirs "$MACON_STATE/prefix-check")
+assert_contains "$UNSAFE" "$MACON_STATE" \
+    "a prefix under a user-owned directory reports the parent"
+assert_eq "" "$(install_unsafe_dirs /usr)" \
+    "a prefix whose whole chain belongs to root reports nothing"
+
+OUT=$(install_explain_unsafe_dirs "$UNSAFE" "$MACON_STATE/prefix-check" 2>&1)
+assert_contains "$OUT" "$MACON_STATE" "the refusal names the exact directory"
+assert_contains "$OUT" "as ROOT" "and states what runs from there with privilege"
+assert_contains "$OUT" "MACON_PREFIX=" "and offers a prefix only root owns"
+assert_contains "$OUT" "--allow-unsafe-prefix" "and the override for someone who means it"
+assert_contains "$OUT" "Homebrew" "and says why an Intel Mac lands here"
+
+# Wired in, like the session guard: sourcing cannot reach the main block.
+: > "$GUARD/sudo-calls"
+rm -f "$GUARD/state/snapshot"
+_rc=0
+OUT=$(run_installer) || _rc=$?
+assert_eq "1" "$_rc" "the installer refuses a prefix root does not own"
+assert_contains "$OUT" "refusing to install" "and says so"
+assert_eq "" "$(cat "$GUARD/sudo-calls")" "without asking for a password first"
+
+: > "$GUARD/sudo-calls"
+OUT=$(run_installer --allow-unsafe-prefix) || :
+assert_contains "$(cat "$GUARD/sudo-calls")" "--install-files" \
+    "--allow-unsafe-prefix carries the install past it"
+assert_contains "$OUT" "--allow-unsafe-prefix given" \
+    "having said what it is overriding"
 
 # --- laying out a prefix ----------------------------------------------------
 

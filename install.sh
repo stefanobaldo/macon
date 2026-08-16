@@ -191,6 +191,105 @@ install_explain_blockers() {
     return 0
 }
 
+_INSTALL_NL='
+'
+
+# True when only root can change what is inside DIR.
+#
+# Both halves matter. An owner other than root can replace anything in the
+# directory, and so can any member of a group that has write permission --
+# `admin` on a Mac, which is every administrator account. A directory that does
+# not exist yet is not a finding: the privileged half creates it, as root.
+#
+# Unreadable ownership fails CLOSED, and the length bound is not hygiene: `[
+# -eq ]` on bash 3.2 exits 2 rather than returning false on an operand it cannot
+# parse, so the comparison would fall through and the guard would stop guarding.
+# The permission half, split out as a pure function so both of its clauses can
+# be asserted: a root-owned directory that is group- or world-writable cannot be
+# produced by a test suite that is not root.
+#
+# MODE is stat's octal digits, compared as TEXT. A leading zero is decimal to
+# `[` and octal to $(( )), and 08 is a fatal arithmetic error rather than a
+# value either of them could report -- so nothing here converts it to a number.
+# An unreadable mode fails closed.
+install_mode_is_root_only() {
+    case "$1" in
+        '' | *[!0-7]*) return 1 ;;
+        *[2367]) return 1 ;;         # writable by other
+        *[2367][0-7]) return 1 ;;    # writable by group
+    esac
+    return 0
+}
+
+install_dir_is_root_only() {
+    [ -d "$1" ] || return 0
+    _own=$(stat -f '%u' "$1" 2>/dev/null)
+    case "$_own" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "${#_own}" -le 10 ] || return 1
+    [ "$_own" -eq 0 ] || return 1
+    install_mode_is_root_only "$(stat -f '%Lp' "$1" 2>/dev/null)"
+}
+
+# The directories this install would land in, or sit under, that someone other
+# than root can write to. One per line, because a prefix may contain a space.
+install_unsafe_dirs() {
+    _bad=""
+    for _leaf in "$1/bin" "$1/libexec"; do
+        if [ -d "$_leaf" ] && ! install_dir_is_root_only "$_leaf"; then
+            _bad="$_bad$_leaf$_INSTALL_NL"
+        fi
+    done
+    _d=$1
+    while [ -n "$_d" ] && [ "$_d" != "/" ] && [ "$_d" != "." ]; do
+        if [ -d "$_d" ] && ! install_dir_is_root_only "$_d"; then
+            _bad="$_bad$_d$_INSTALL_NL"
+        fi
+        _d=$(dirname "$_d")
+    done
+    printf '%s' "$_bad"
+}
+
+# The chown the privileged half already does covers the macon tree. It does not
+# and cannot cover the directories ABOVE it, and that is where the boundary is
+# crossed: `macon on` starts the helper with `sudo nohup`, so anything that can
+# write to a parent can swap the whole macon directory for its own and have its
+# code run as root the next time the user types their password for a perfectly
+# ordinary command. That turns a password-gated privilege into an ungated one.
+#
+# Refusing costs a real install on a real Mac -- Homebrew leaves /usr/local
+# user-owned, which is the normal state of an Intel machine. Taking ownership
+# instead would be macon reorganising another package manager's prefix, which it
+# does not get to do and could not undo on uninstall. So the refusal is the
+# default and the user is told exactly which directory, exactly what the risk
+# is, and all three ways out.
+install_explain_unsafe_dirs() {
+    printf 'macon: refusing to install: these directories can be written to by\n' >&2
+    printf 'macon: someone other than root:\n' >&2
+    printf '%s' "$1" | while IFS= read -r _d; do
+        [ -n "$_d" ] || continue
+        printf 'macon:   %s\n' "$_d" >&2
+    done
+    printf 'macon:\n' >&2
+    printf 'macon: macon on starts %s/libexec/macon/macon-helper as ROOT, through\n' "$2" >&2
+    printf 'macon: sudo. Anything that can write to a directory above that helper can\n' >&2
+    printf 'macon: replace it, and have its own code run as root the next time you\n' >&2
+    printf 'macon: type your password for macon on -- with no further prompt.\n' >&2
+    printf 'macon: Homebrew leaves /usr/local user-owned, so on an Intel Mac this is\n' >&2
+    printf 'macon: the normal state of the prefix rather than a sign of tampering.\n' >&2
+    printf 'macon:\n' >&2
+    printf 'macon: Give the directories above to root:\n' >&2
+    printf 'macon:   sudo chown root:wheel DIR && sudo chmod go-w DIR\n' >&2
+    printf 'macon: Do NOT do that to a prefix Homebrew manages -- it writes there\n' >&2
+    printf 'macon: without sudo, and macon does not get to reorganise it. Install\n' >&2
+    printf 'macon: under a prefix only root owns instead:\n' >&2
+    printf 'macon:   MACON_PREFIX=/opt/macon sh install.sh\n' >&2
+    printf 'macon: Or accept the risk, knowing what it is:\n' >&2
+    printf 'macon:   sh install.sh --allow-unsafe-prefix\n' >&2
+    return 0
+}
+
 # Copies the components into PREFIX. The only function here that writes
 # anything, and the only one the tests point at a temporary directory.
 #
@@ -282,11 +381,13 @@ if [ -z "${MACON_INSTALL_SOURCED:-}" ]; then
     fi
 
     _force=0
+    _allow_unsafe=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) _force=1; shift ;;
+            --allow-unsafe-prefix) _allow_unsafe=1; shift ;;
             *)
-                printf 'usage: sh install.sh [--force]\n' >&2
+                printf 'usage: sh install.sh [--force] [--allow-unsafe-prefix]\n' >&2
                 exit 1
                 ;;
         esac
@@ -311,6 +412,19 @@ if [ -z "${MACON_INSTALL_SOURCED:-}" ]; then
         printf 'macon:   sudo pmset -a disablesleep 0\n' >&2
         printf 'macon: and reapply the values in %s/snapshot\n' \
             "$(install_state_dir)" >&2
+    fi
+
+    # The helper runs as root for a whole night. A parent directory anyone else
+    # can write to makes that a root shell available for the asking.
+    _unsafe=$(install_unsafe_dirs "$MACON_PREFIX")
+    if [ -n "$_unsafe" ] && [ "$_allow_unsafe" -eq 0 ]; then
+        install_explain_unsafe_dirs "$_unsafe" "$MACON_PREFIX"
+        exit 1
+    fi
+    if [ -n "$_unsafe" ]; then
+        printf 'macon: --allow-unsafe-prefix given; installing under a prefix whose\n' >&2
+        printf 'macon: parent directories are writable by someone other than root.\n' >&2
+        printf 'macon: Anyone who can write there can replace the root helper.\n' >&2
     fi
 
     printf 'installing macon into %s (sudo will ask for your password)\n' "$MACON_PREFIX"
