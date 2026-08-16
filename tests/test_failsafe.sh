@@ -216,9 +216,24 @@ export MACON_STATE
 #
 # launchd starts a system daemon with no user context. Every state path here
 # defaults to $HOME/..., and under `set -u` an unset HOME is fatal rather than
-# absent -- the shell would exit between clearing disablesleep and restoring
-# anything, with no log line to say why. Sourced rather than run: running it
-# would drive the REAL platform layer against this machine.
+# absent. Sourced rather than run: running it would drive the REAL platform
+# layer against this machine.
+#
+# This began as defence against a behaviour nobody had confirmed. It is now
+# measured: on a real install, `launchctl print system/local.macon.failsafe`
+# reports the daemon's environment as MACON_LIB, MACON_LIBEXEC, MACON_STATE,
+# OSLogRateLimit and XPC_SERVICE_NAME -- and no HOME. The default is
+# load-bearing, not belt-and-braces.
+#
+# The failure it prevents is also worse than "the shell exits": removing this
+# line and starting the script the way launchd does logs
+# "boot detected: disablesleep cleared" and then "no snapshot to restore",
+# with `snapshot.sh: HOME: unbound variable` on stderr where nobody reads it.
+# snap_path() dies inside a command substitution, so snap_exists() merely reads
+# false -- the daemon reports a clean run while a snapshot sits on disk and the
+# machine keeps its zeroed sleep timers. A default install masks it, because the
+# plist names MACON_STATE and the $HOME branch is never taken; what this
+# protects is the safety net underneath that.
 # The single quotes are the point: $HOME must be expanded by the child shell,
 # after it has sourced the file, not by this one before it starts.
 # shellcheck disable=SC2016

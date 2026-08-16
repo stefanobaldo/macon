@@ -356,13 +356,25 @@ cli_arm() {
     # start: the sudo timestamp would expire overnight and a rollback that
     # needed a password would fail silently.
     #
+    # The library paths are restated through `env` because sudo's env_reset
+    # drops them: verified, `MACON_LIB=probe sudo -n printenv MACON_LIB` prints
+    # nothing and exits 1 while the same probe on PATH returns a value, so sudo
+    # really did run. Without this the helper falls back to its /usr/local
+    # default, cannot find its libraries under a non-default MACON_PREFIX, and
+    # dies -- the session fails closed, but it fails every time.
+    #
+    # `sudo VAR=val cmd` is deliberately not used: that form needs the setenv
+    # privilege in sudoers and errors without it, which is a worse failure than
+    # the one being fixed.
+    #
     # MACON_HELPER_CMD replaces the launcher wholesale, for the tests that
     # have to watch this fail. The descriptor path is in MACON_DESC.
     MACON_DESC=$_d
     export MACON_DESC
     _cmd=${MACON_HELPER_CMD:-}
     if [ -z "$_cmd" ]; then
-        _cmd="sudo nohup \"\$MACON_LIBEXEC/macon-helper\" start \"\$MACON_DESC\" >/dev/null 2>&1 &"
+        _cmd="sudo /usr/bin/env MACON_LIB=\"\$MACON_LIB\" MACON_LIBEXEC=\"\$MACON_LIBEXEC\" \
+nohup \"\$MACON_LIBEXEC/macon-helper\" start \"\$MACON_DESC\" >/dev/null 2>&1 &"
     fi
     if ! eval "$_cmd"; then
         cli_rollback "the helper failed to start"
