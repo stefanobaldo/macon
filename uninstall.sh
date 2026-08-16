@@ -156,6 +156,25 @@ uninstall_explain_stuck_failsafe() {
     return 0
 }
 
+# Removing the boot failsafe goes through the CLI, which refuses while this Mac
+# still looks like it is holding a session -- the same three blockers checked
+# here. FORCE is the decision already taken above, passed through: without it,
+# `uninstall.sh --force` would stop at the verb it calls, having warned the user
+# that it was going ahead.
+uninstall_failsafe_remove() {
+    [ -x "$MACON_PREFIX/bin/macon" ] || return 0
+    if [ "$1" -eq 1 ]; then
+        MACON_LIB="$MACON_PREFIX/libexec/macon/lib" \
+            MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
+            "$MACON_PREFIX/bin/macon" failsafe remove --force || :
+    else
+        MACON_LIB="$MACON_PREFIX/libexec/macon/lib" \
+            MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
+            "$MACON_PREFIX/bin/macon" failsafe remove || :
+    fi
+    return 0
+}
+
 uninstall_state_note() {
     printf 'Your session records and power snapshot were left in place:\n'
     printf '  %s\n' "$(uninstall_state_dir)"
@@ -191,11 +210,7 @@ if [ -z "${MACON_UNINSTALL_SOURCED:-}" ]; then
     fi
 
     printf 'removing the boot failsafe...\n'
-    if [ -x "$MACON_PREFIX/bin/macon" ]; then
-        MACON_LIB="$MACON_PREFIX/libexec/macon/lib" \
-            MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
-            "$MACON_PREFIX/bin/macon" failsafe remove || :
-    fi
+    uninstall_failsafe_remove "$_force"
 
     # The result is checked, not the attempt. `macon failsafe remove` exits 0
     # whether or not the plist actually went, and the CLI above may not have

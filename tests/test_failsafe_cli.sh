@@ -161,4 +161,78 @@ try_failsafe() {
 assert_fail "an unknown verb is refused" try_failsafe wobble
 assert_fail "and so is one that merely looks like install" try_failsafe INSTALL
 
+# --- remove ------------------------------------------------------------------
+#
+# `macon failsafe remove` strips off the machine the only component that holds
+# the invariant across a reboot. cli_preflight refuses to ARM a session without
+# it and uninstall.sh refuses to remove macon while a session holds -- but the
+# verb that performs exactly that removal used to check nothing. Run mid-session,
+# a panic at 03:00 reboots into disablesleep with nothing left to clear it.
+#
+# `sudo` is a shell function here, so the verb can be driven to the end without
+# a password prompt -- which inside a suite is a hang rather than a failure. It
+# records what it was asked to run and does nothing, which is also how "the
+# refusal never reached the removal" is asserted.
+SUDO_LOG="$MACON_STATE/sudo"
+# shellcheck disable=SC2317,SC2329
+sudo() { printf '%s\n' "$*" >> "$SUDO_LOG"; }
+
+quiet_remove() {
+    : > "$SUDO_LOG"
+    ( cli_cmd_failsafe remove "$@" ) >/dev/null 2>&1
+}
+
+# A clean machine: no session, sleep enabled, nothing saved.
+clear_blockers() {
+    rm -f "$(sess_pid_path)" "$(snap_path)"
+    fake_set sleep_disabled no
+    mkdir -p "$(sess_run_dir)"
+}
+
+clear_blockers
+assert_eq "" "$(cli_failsafe_blockers)" "an idle machine blocks nothing"
+assert_ok "and the failsafe can be removed" quiet_remove
+assert_contains "$(cat "$SUDO_LOG")" "rm -f $MACON_FS_PLIST" \
+    "the removal reaches the plist"
+
+# A snapshot on disk means the machine still holds values macon changed.
+clear_blockers
+printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
+assert_contains "$(cli_failsafe_blockers)" "snapshot" "a stored snapshot is a blocker"
+assert_fail "and the removal is refused" quiet_remove
+assert_eq "" "$(cat "$SUDO_LOG")" "the refusal never reached launchctl or rm"
+
+# Clamshell sleep still disabled is the blocker that catches a modified machine
+# whose snapshot has already gone.
+clear_blockers
+fake_set sleep_disabled yes
+assert_contains "$(cli_failsafe_blockers)" "sleep-disabled" \
+    "a machine that cannot sleep is a blocker"
+assert_fail "and the removal is refused" quiet_remove
+
+# A live helper is a live session.
+clear_blockers
+printf '4242\n' > "$(sess_pid_path)"
+fake_set proc_4242 '/usr/local/libexec/macon/macon-helper start /var/run/macon/session.conf'
+assert_contains "$(cli_failsafe_blockers)" "session" "a live helper is a blocker"
+assert_fail "and the removal is refused" quiet_remove
+assert_eq "" "$(cat "$SUDO_LOG")" "still without touching the plist"
+
+# The refusal has to be actionable: it names what it found and the way out.
+OUT=$( ( cli_cmd_failsafe remove ) 2>&1 )
+assert_contains "$OUT" "macon off" "the refusal points at the command that fixes it"
+assert_contains "$OUT" "--force" "and names the override for someone who means it"
+assert_contains "$OUT" "$(sess_pid_path)" "and the pid file it found"
+
+# uninstall.sh --force reaches this verb with the blockers deliberately present.
+# Without the passthrough, the whole --force path would stop here.
+assert_ok "--force removes it anyway" quiet_remove --force
+assert_contains "$(cat "$SUDO_LOG")" "rm -f $MACON_FS_PLIST" \
+    "and the removal really runs"
+
+# An unrecognised flag must not be read as consent.
+assert_fail "an unknown flag on remove is refused" quiet_remove --yes-really
+assert_eq "" "$(cat "$SUDO_LOG")" "and removes nothing"
+clear_blockers
+
 teardown_state
