@@ -50,7 +50,7 @@ assert_ok "the required binaries are present" install_check_binaries
 # uid used to be allowed through. Proven by emptying PATH: command -v and printf
 # are builtins, so the function still runs and reports everything as missing.
 # Emptying the search path is the point of this one.
-# shellcheck disable=SC2123
+# shellcheck disable=SC2123,SC2030,SC2031
 missing_binaries() ( PATH=/var/empty; install_check_binaries 2>&1 )
 OUT=$(missing_binaries) || :
 assert_contains "$OUT" " id" "id is one of the required binaries"
@@ -99,6 +99,107 @@ assert_eq "/opt/elsewhere" "$OUT" "an inherited SRC_DIR survives sourcing"
 OUT=$(env -u SRC_DIR MACON_INSTALL_SOURCED=1 \
     sh -c 'cd "$1" && . ./install.sh; printf "%s\n" "$SRC_DIR"' sh "$REPO_DIR")
 assert_eq "$REPO_DIR" "$OUT" "and without one it falls back to the script's own directory"
+
+# --- refusing to install over a live session --------------------------------
+#
+# install_files cp's over $PREFIX/libexec/macon/macon-helper while that helper
+# may be running as root, and cp replaces the file in place: a shell reads its
+# script lazily, so the running helper can take a syntax error or execute
+# unintended bytes at its next read. It dies with the power settings applied and
+# leaves an orphan nothing detects until the next macon invocation -- and
+# "upgrade macon" is a documented, ordinary operation. This is the mirror of the
+# guard uninstall.sh has had all along, and it carries the same three blockers.
+
+assert_fail "an empty run directory holds no live helper" install_helper_alive
+
+printf 'not-a-pid\n' > "$MACON_RUN/helper.pid"
+assert_fail "a garbage pid file is not a live helper" install_helper_alive
+printf '\n' > "$MACON_RUN/helper.pid"
+assert_fail "an empty pid file is not a live helper" install_helper_alive
+printf '2147483647\n' > "$MACON_RUN/helper.pid"
+assert_fail "a pid that no longer exists does not block forever" install_helper_alive
+
+# ps, not `kill -0`: the helper runs as root and the installer does not, so
+# `kill -0` would answer EPERM -- a false negative on exactly this case.
+printf '%s\n' "$$" > "$MACON_RUN/helper.pid"
+assert_ok "a live pid in helper.pid is a live helper" install_helper_alive
+assert_contains "$(install_blockers)" "session" "and it blocks the install"
+OUT=$(install_explain_blockers "$(install_blockers)" 2>&1)
+assert_contains "$OUT" "macon off" "the refusal points at the command that fixes it"
+assert_contains "$OUT" "--force" "and names the override for someone who means it"
+assert_contains "$OUT" "in place" "and says what the copy would do to the running helper"
+rm -f "$MACON_RUN/helper.pid"
+
+assert_fail "with nothing saved there is no snapshot to worry about" \
+    install_snapshot_present
+: > "$MACON_STATE/snapshot"
+assert_ok "a snapshot on disk is detected" install_snapshot_present
+assert_contains "$(install_blockers)" "snapshot" "and blocks the install"
+rm -f "$MACON_STATE/snapshot"
+
+# install.sh calls ioreg directly and by design -- it has to answer this with
+# nothing installed yet -- so a PATH shim tests the real seam.
+SHIM="$MACON_STATE/ioreg-shim"
+mkdir -p "$SHIM"
+# The subshell is deliberate: the shimmed PATH must not outlive the call, or
+# every later assertion would run against the fake ioreg.
+# shellcheck disable=SC2030,SC2031
+sleep_disabled_via_shim() ( PATH="$SHIM:$PATH"; export PATH; install_sleep_disabled )
+# shellcheck disable=SC2030,SC2031
+blockers_via_shim() ( PATH="$SHIM:$PATH"; export PATH; install_blockers )
+fake_ioreg() {
+    printf '#!/bin/sh\n%s\n' "$1" > "$SHIM/ioreg"
+    chmod 755 "$SHIM/ioreg"
+}
+
+fake_ioreg 'printf "    | {\n    |   \"SleepDisabled\" = Yes\n    | }\n"'
+assert_ok "SleepDisabled = Yes is detected" sleep_disabled_via_shim
+assert_contains "$(blockers_via_shim)" "sleep-disabled" \
+    "and blocks the install on its own, with no session and no snapshot"
+fake_ioreg 'printf "    | {\n    |   \"SleepDisabled\" = No\n    | }\n"'
+assert_fail "SleepDisabled = No is not a blocker" sleep_disabled_via_shim
+fake_ioreg 'exit 0'
+assert_fail "a machine that reports nothing is not a blocker" sleep_disabled_via_shim
+rm -f "$SHIM/ioreg"
+
+# The refusal has to be WIRED IN, and the main block is the one part sourcing
+# cannot reach -- so the script is run for real, with a PATH shim standing in
+# for sudo. That shim is what makes this safe in both directions: a suite that
+# actually asked for a password would hang rather than fail, so a regression
+# that let the installer through is caught here instead of blocking on a prompt.
+GUARD="$MACON_STATE/guard"
+mkdir -p "$GUARD/shim" "$GUARD/run" "$GUARD/state" "$GUARD/prefix"
+printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >> "%s"\nexit 97\n' \
+    "$GUARD/sudo-calls" > "$GUARD/shim/sudo"
+chmod 755 "$GUARD/shim/sudo"
+printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$GUARD/state/snapshot"
+
+# shellcheck disable=SC2030,SC2031
+run_installer() (
+    PATH="$GUARD/shim:$PATH"
+    export PATH
+    MACON_RUN="$GUARD/run" MACON_STATE="$GUARD/state" MACON_PREFIX="$GUARD/prefix" \
+        SRC_DIR="$REPO_DIR" env -u MACON_INSTALL_SOURCED \
+        sh "$REPO_DIR/install.sh" "$@" 2>&1
+)
+
+: > "$GUARD/sudo-calls"
+_rc=0
+OUT=$(run_installer) || _rc=$?
+assert_eq "1" "$_rc" "the installer refuses over a machine that looks modified"
+assert_contains "$OUT" "refusing to install" "and says so"
+assert_eq "" "$(cat "$GUARD/sudo-calls")" "without asking for a password first"
+
+: > "$GUARD/sudo-calls"
+OUT=$(run_installer --force) || :
+assert_contains "$(cat "$GUARD/sudo-calls")" "--install-files" \
+    "--force carries the install past the refusal"
+assert_contains "$OUT" "--force given" "having said what it is overriding"
+
+_rc=0
+OUT=$(run_installer --wobble) || _rc=$?
+assert_eq "1" "$_rc" "an unknown flag is refused rather than ignored"
+assert_contains "$OUT" "usage:" "with the usage line"
 
 # --- laying out a prefix ----------------------------------------------------
 
