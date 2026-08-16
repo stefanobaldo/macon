@@ -2,8 +2,15 @@
 # Installs macon. Environment verification happens here, once, rather than on
 # every invocation.
 #
-# Usage: sh install.sh          (as yourself -- NOT under sudo; see below)
+# Usage: sh install.sh [--force]   (as yourself -- NOT under sudo; see below)
 #        MACON_PREFIX=/opt/x sh install.sh
+#
+# It refuses while this Mac still looks like it is holding a session, for the
+# same reason uninstall.sh does and with the same three blockers: cp replaces
+# the running root helper in place, and a bash reading its script lazily can
+# take a syntax error or execute unintended bytes at its next read. The helper
+# dies with the power settings still applied, and nothing detects the orphan
+# until someone runs macon status, macon on, or reboots.
 #
 # Sourcing this file with MACON_INSTALL_SOURCED=1 defines the functions and
 # does nothing else, which is what makes the checks testable without a suite
@@ -108,6 +115,82 @@ install_check_source() {
     return 0
 }
 
+# The same defaults the library modules use, restated rather than sourced --
+# the mirror of uninstall.sh's reason: this script runs BEFORE anything is
+# installed, and sourcing the tree it is about to copy would mean running code
+# out of a source tree it has not finished checking.
+install_run_dir() {
+    printf '%s\n' "${MACON_RUN:-/var/run/macon}"
+}
+
+install_state_dir() {
+    printf '%s\n' "${MACON_STATE:-$HOME/.local/state/macon}"
+}
+
+# Is a process from the run directory still alive? Deliberately conservative in
+# the same two ways uninstall_helper_alive is: no command-line match, so a
+# recycled pid counts as a helper, and ps rather than `kill -0`, because the
+# helper runs as root while this script does not -- `kill -0` would answer
+# EPERM, a false negative on exactly the case this exists for.
+install_helper_alive() {
+    _pid=$(cat "$(install_run_dir)/helper.pid" 2>/dev/null) || return 1
+    case "$_pid" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    ps -p "$_pid" -o pid= >/dev/null 2>&1
+}
+
+# A snapshot exists only between `macon on` and a successful `macon off`. Its
+# presence means the machine still holds values macon changed.
+install_snapshot_present() {
+    [ -f "$(install_state_dir)/snapshot" ]
+}
+
+# Read straight from the IORegistry: SleepDisabled is the one bit that decides
+# whether closing the lid suspends, and this script has to be able to answer
+# that with nothing installed yet.
+install_sleep_disabled() {
+    ioreg -r -k SleepDisabled 2>/dev/null | grep -q '"SleepDisabled" = Yes'
+}
+
+# Everything that makes installing over this machine unsafe right now, as a word
+# list. The same three blockers, in the same words, as uninstall.sh.
+install_blockers() {
+    _b=""
+    install_helper_alive && _b="$_b session"
+    install_sleep_disabled && _b="$_b sleep-disabled"
+    install_snapshot_present && _b="$_b snapshot"
+    printf '%s\n' "${_b# }"
+}
+
+install_explain_blockers() {
+    printf 'macon: refusing to install -- this Mac looks like it is holding a session:\n' >&2
+    # Intentionally unquoted: $1 is the word list install_blockers built.
+    # shellcheck disable=SC2086
+    for _r in $1; do
+        case "$_r" in
+            session)
+                printf '  - a session is still running (%s/helper.pid)\n' \
+                    "$(install_run_dir)" >&2
+                ;;
+            sleep-disabled)
+                printf '  - clamshell sleep is DISABLED right now\n' >&2
+                ;;
+            snapshot)
+                printf '  - the power snapshot is still on disk: %s/snapshot\n' \
+                    "$(install_state_dir)" >&2
+                ;;
+        esac
+    done
+    printf '\ninstalling copies over the running root helper in place, and a shell\n' >&2
+    printf 'reads its script lazily: the helper can take a syntax error at its next\n' >&2
+    printf 'read and die with the power settings still applied, leaving an orphan\n' >&2
+    printf 'nothing detects until the next macon invocation.\n' >&2
+    printf "\nrun 'macon off' first, then install. To install anyway:\n" >&2
+    printf '  sh install.sh --force\n' >&2
+    return 0
+}
+
 # Copies the components into PREFIX. The only function here that writes
 # anything, and the only one the tests point at a temporary directory.
 #
@@ -198,10 +281,37 @@ if [ -z "${MACON_INSTALL_SOURCED:-}" ]; then
         exit 0
     fi
 
+    _force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --force) _force=1; shift ;;
+            *)
+                printf 'usage: sh install.sh [--force]\n' >&2
+                exit 1
+                ;;
+        esac
+    done
+
     install_check_not_root "$(id -u)" "${SUDO_USER:-}" || exit 1
     install_check_macos "$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)" || exit 1
     install_check_binaries || exit 1
     install_check_source "$SRC_DIR" || exit 1
+
+    # Before the sudo prompt and before anything is copied: install_files cp's
+    # over the running root helper in place. The mirror of the guard
+    # uninstall.sh has had all along.
+    _blockers=$(install_blockers)
+    if [ -n "$_blockers" ]; then
+        if [ "$_force" -eq 0 ]; then
+            install_explain_blockers "$_blockers"
+            exit 1
+        fi
+        printf 'macon: --force given; installing over what looks like a live\n' >&2
+        printf 'macon: session. If the helper dies, restore this Mac by hand:\n' >&2
+        printf 'macon:   sudo pmset -a disablesleep 0\n' >&2
+        printf 'macon: and reapply the values in %s/snapshot\n' \
+            "$(install_state_dir)" >&2
+    fi
 
     printf 'installing macon into %s (sudo will ask for your password)\n' "$MACON_PREFIX"
     sudo sh "$SRC_DIR/install.sh" --install-files "$MACON_PREFIX" || exit 1
