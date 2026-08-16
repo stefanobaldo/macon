@@ -1,0 +1,71 @@
+#compdef macon
+# zsh completion for macon. Put this directory on your fpath before compinit:
+#     fpath=(/path/to/macon/completions $fpath)
+#
+# Not installed by install.sh -- it writes only to the prefix, and a completion
+# belongs to a shell's configuration rather than to the tool.
+
+_macon() {
+    local -a subcommands
+    subcommands=(
+        'on:keep the Mac awake for a number of hours'
+        'run:keep it awake while a command runs'
+        'off:restore the power configuration now'
+        'status:show the current state'
+        'report:render an HTML report of past sessions'
+        'saved:show the stored power snapshot'
+        'log:show a session'"'"'s raw samples'
+        'failsafe:install, remove or check the boot failsafe'
+        'version:print the version'
+        'help:print usage'
+    )
+
+    local -a on_opts
+    on_opts=(
+        '--max[hard ceiling, in hours]:hours:'
+        '--on-expire[what to do at the soft deadline]:policy:(restore extend)'
+        '--extend-by[extension step, in minutes]:minutes:'
+        '--busy-check[completion predicate, run as you]:command:'
+        '--sentinel[end when a sentinel file appears]'
+        '--hook-end[run after the restore, with MACON_REASON set]:command:'
+        '--hook-warn[run before the soft deadline]:command:'
+        '--pre-warn[warning lead time, in minutes]:minutes:'
+        '--interval[sampling interval, in seconds]:seconds:'
+        '--force[allow starting on battery]'
+        '--no-failsafe[allow starting without the boot failsafe]'
+    )
+
+    _arguments -C \
+        '1:command:->cmd' \
+        '*::arg:->args'
+
+    case $state in
+        cmd)
+            _describe -t commands 'macon command' subcommands
+            ;;
+        args)
+            case $words[1] in
+                on)
+                    _arguments '1:hours:' $on_opts
+                    ;;
+                run)
+                    _arguments $on_opts '*:::command:_normal'
+                    ;;
+                report)
+                    _arguments \
+                        '--out[write the report to FILE]:file:_files' \
+                        '--since[only sessions after DATE]:date:' \
+                        '--session[a single session by id]:id:'
+                    ;;
+                log)
+                    _arguments '--session[a single session by id]:id:'
+                    ;;
+                failsafe)
+                    _values 'verb' 'install' 'remove' 'status'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_macon "$@"
