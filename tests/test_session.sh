@@ -156,6 +156,25 @@ strikes=99999999999999999999"
 assert_eq "2" "$(sess_get "$D" strikes)" "the forged key never reached the file"
 assert_eq "stefz" "$(sess_get "$D" user)" "the refused write left the old value"
 
+# A write that cannot produce its temporary file must be REPORTED, not
+# swallowed. sess_set rewrites the descriptor rather than editing it, and the
+# root helper re-reads that file at every poll: a rewrite that half succeeded
+# and was installed anyway is a poll order whose operands are empty, and empty
+# operands make `[ -ge ]` exit 2 on bash 3.2 -- every rung falls through and the
+# hard ceiling stops being evaluated at all. Simulated by making the temporary
+# path impossible to create, which is what a full or read-only volume produces.
+write_valid
+mkdir -p "$D.tmp"
+assert_fail "a rewrite that cannot be written is refused" \
+    sess_set "$D" soft_deadline 1700009999
+assert_eq "1700003600" "$(sess_get "$D" soft_deadline)" \
+    "and the descriptor still holds the value it had"
+assert_ok "the descriptor is still a valid one" sess_validate "$D"
+rmdir "$D.tmp"
+assert_ok "and the same write succeeds once the path is writable again" \
+    sess_set "$D" soft_deadline 1700009999
+assert_eq "1700009999" "$(sess_get "$D" soft_deadline)" "with the new value in place"
+
 # Liveness needs both halves proved. A `return 1` stub and a liveness-only
 # check that drops the name match are both wrong in opposite directions: the
 # first reports every healthy session as an orphan, the second hands a

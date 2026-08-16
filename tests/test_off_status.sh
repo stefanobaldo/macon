@@ -167,6 +167,32 @@ assert_fail "off without a snapshot still lets the machine sleep" plat_sleep_dis
 assert_eq "0" "$(fake_call_count 'pmset_apply_ac')" \
     "and applies nothing it would have to invent"
 
+# The run files are cleared AFTER the restore, not before it. cli_stop_helper
+# gives up after MACON_ARM_TRIES and warns "did not stop; restoring anyway", so
+# a helper can still be polling here -- and deleting the descriptor out from
+# under it leaves it reading every field as empty, which is what `[ -ge ]` exits
+# 2 on. Asserted as an order rather than a state, through the same call log the
+# restore is already recorded in.
+#
+# Behaviourally the real cli_remove_run_files, minus the sudo escalation this
+# suite must never reach: every file it is given here is owned by the user
+# running the tests, so the first rm always succeeds.
+# shellcheck disable=SC2317,SC2329
+cli_remove_run_files() {
+    fake_record "remove_run_files"
+    rm -f "$@" 2>/dev/null || :
+}
+
+arm
+start_stub_helper
+fake_reset_calls
+cli_cmd_off >/dev/null
+assert_eq "pmset_disablesleep 0" \
+    "$(fake_calls | grep -e 'pmset_disablesleep' -e 'remove_run_files' | head -1)" \
+    "off restores before it deletes the descriptor the helper polls from"
+assert_contains "$(fake_calls)" "remove_run_files" "and it does delete them"
+assert_fail "off clears the descriptor" test -f "$(sess_desc_path)"
+
 # --- healing an orphan ------------------------------------------------------
 #
 # Settings applied, no live helper, stale heartbeat: nothing will end this

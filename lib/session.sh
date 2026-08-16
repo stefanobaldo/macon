@@ -50,8 +50,32 @@ sess_set() {
             ;;
     esac
     if [ -f "$_f" ]; then
-        grep -v "^$_k=" "$_f" > "$_f.tmp" 2>/dev/null || :
-        mv "$_f.tmp" "$_f"
+        # The rewrite is checked, and its result is installed only if it
+        # succeeded. `|| :` here used to swallow a PARTIAL write -- a full disk
+        # on the volume /var/run lives on -- and the mv then put that truncation
+        # over the good descriptor. The root helper re-reads this file at every
+        # poll, so a truncated descriptor is a poll order with no operands: the
+        # hard ceiling stops being evaluated while the helper is still alive.
+        #
+        # grep exits 1 for "no lines selected", which is the ordinary result of
+        # rewriting a file that holds only this key. Anything above that is an
+        # error -- and so is a redirection that never produced the temporary at
+        # all, which the status alone does not distinguish: a shell reports a
+        # redirection it could not open as status 1, the same value grep uses
+        # for a successful run that matched nothing. Braced so that message
+        # goes to /dev/null with grep's own.
+        { grep -v "^$_k=" "$_f" > "$_f.tmp"; } 2>/dev/null
+        _sess_rc=$?
+        if [ "$_sess_rc" -gt 1 ] || [ ! -f "$_f.tmp" ]; then
+            rm -f "$_f.tmp" 2>/dev/null || :
+            macon_warn "could not rewrite '$_f' to set '$_k'"
+            return 1
+        fi
+        if ! mv "$_f.tmp" "$_f"; then
+            rm -f "$_f.tmp"
+            macon_warn "could not replace '$_f' while setting '$_k'"
+            return 1
+        fi
     fi
     printf '%s=%s\n' "$_k" "$_v" >> "$_f"
 }

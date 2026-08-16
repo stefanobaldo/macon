@@ -268,6 +268,32 @@ helper_probe_busy() {
 # One poll: sample, evaluate, echo the decision.
 helper_iterate() {
     _d=$1
+
+    # The descriptor is validated once on arrival and then re-read at EVERY
+    # poll, so it is re-validated at every poll. It is not a constant: a failed
+    # sess_set can truncate it, and `macon off` deletes it -- including after
+    # giving up on a helper that would not die, which leaves this loop reading
+    # a file that is gone.
+    #
+    # sess_get answers a missing file with SUCCESS and no output, and an empty
+    # operand makes `[ -ge ]` EXIT 2 on bash 3.2 rather than return false. That
+    # does not fail the comparisons in macon_decide, it makes every one of them
+    # fall through: the poll order stops being evaluated at all and the function
+    # returns `continue` for ever, while the helper is still alive, so
+    # sess_orphaned is false and `macon status` reports a healthy session. The
+    # machine stays awake past its ceiling with nothing left to notice.
+    #
+    # Hence the direction: a session whose parameters cannot be read cannot be
+    # evaluated, and a session that cannot be evaluated must not hold the
+    # machine awake. The descriptor is the helper's own file and it is still
+    # treated as untrustworthy at every poll, because the route by which it goes
+    # bad is exactly the route nobody has classified yet.
+    if ! helper_validate_desc "$_d"; then
+        macon_warn "the session descriptor is no longer usable; ending the session"
+        printf 'end:invalid-descriptor\n'
+        return 0
+    fi
+
     _now=$(macon_now)
     _id=$(sess_get "$_d" session_id)
 
@@ -316,9 +342,12 @@ helper_finish() {
     _d=$1
     _reason=$2
     _id=$(sess_get "$_d" session_id)
+    _started=$(sess_get "$_d" started_at)
 
     # Restore FIRST. A hung or broken hook must never be able to delay the
-    # safety action (spec 9.3), and neither must a bookkeeping failure.
+    # safety action (spec 9.3), and neither must a bookkeeping failure -- nor an
+    # unreadable descriptor, which is one of the reasons this function is
+    # called. Everything below reads the descriptor; this does not.
     if ! snap_restore; then
         macon_warn "restore reported a failure while ending the session ($_reason)"
     fi
@@ -326,8 +355,17 @@ helper_finish() {
     # Bookkeeping cannot fail the session: the restore above has already
     # happened, and this is the same close-out the CLI performs when `off` ends
     # a session the helper is not around to close.
-    rec_close_session "$_id" "$(sess_get "$_d" started_at)" "$(macon_now)" "$_reason" ||
-        macon_warn "session '$_id' ended ($_reason) but was not recorded"
+    #
+    # Both fields are checked because the descriptor may be gone: an id that is
+    # not an identifier and a start that is not an epoch produce a half-empty
+    # index row rather than a record of the night, and the row is worth less
+    # than the warning that says why there is none.
+    if _sess_is_name "$_id" && _sess_is_number "$_started"; then
+        rec_close_session "$_id" "$_started" "$(macon_now)" "$_reason" ||
+            macon_warn "session '$_id' ended ($_reason) but was not recorded"
+    else
+        macon_warn "a session ended ($_reason) but its descriptor was unreadable; not recorded"
+    fi
 
     _hook=$(sess_get "$_d" hook_end)
     if [ -n "$_hook" ]; then
@@ -371,7 +409,18 @@ helper_loop() {
                 _new=$(( $(sess_get "$_d" soft_deadline) + $(sess_get "$_d" extend_by) ))
                 _ceil=$(sess_get "$_d" hard_ceiling)
                 [ "$_new" -gt "$_ceil" ] && _new=$_ceil
-                sess_set "$_d" soft_deadline "$_new"
+                # Checked, because this rewrites the file the next poll reasons
+                # from. sess_set replaces the descriptor rather than editing it,
+                # and it refuses rather than installing a partial rewrite -- but
+                # a descriptor this loop could not update is one it can no
+                # longer keep a deadline in, and the extension it just granted
+                # would be granted again at every poll for the rest of the
+                # night. Ending is the direction the invariant points.
+                if ! sess_set "$_d" soft_deadline "$_new"; then
+                    macon_warn "could not extend the soft deadline; ending the session"
+                    helper_finish "$_d" "descriptor-write-failed"
+                    return 0
+                fi
                 _warned=0
                 ;;
             end:*)
