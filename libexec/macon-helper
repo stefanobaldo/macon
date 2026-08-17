@@ -513,12 +513,18 @@ helper_say_as_user() {
     # Arguments stay arguments. Building `sh -c "say '$_sa_phrase'"` would put
     # the phrase through a round of shell parsing it has no business surviving,
     # and this file's rule is that root evaluates nothing.
+    #
+    # stdin is closed explicitly, as it is everywhere else this file puts a
+    # process in the background. Root never gets a password prompt out of `sudo
+    # -u`, and `launchctl asuser` would not have got this far without being
+    # root -- but that is an invariant held somewhere else in the file, and a
+    # prompt reading the helper's own stdin is not a failure anyone would find.
     (
         launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
             afplay "$MACON_ANNOUNCE_SOUND"
         launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
             say "$_sa_phrase"
-    ) >/dev/null 2>&1 &
+    ) < /dev/null > /dev/null 2>&1 &
 }
 
 # Say that the session is holding, and for how much longer.
