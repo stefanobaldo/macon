@@ -457,8 +457,17 @@ assert_eq "$MACON_INTERVAL_FLOOR" "$(helper_wait_seconds '')" \
 assert_eq "$MACON_INTERVAL_FLOOR" "$(helper_wait_seconds 'abc')" \
     "and so does one that is not a number"
 
-# The real pause, on the real clock: one second of waiting has to contain
-# several looks at the lid, not one.
+# The real pause, on the real clock: a pause has to contain several looks at
+# the lid, not one.
+#
+# Two seconds, not one, and the difference is not patience. helper_wait builds
+# its deadline out of macon_now, which counts whole seconds, so a request for
+# one second is worth anywhere from a hair to a full second depending on where
+# in the current second the call lands -- and a hair is one look, below the
+# floor this asserts. Asking for two leaves at least a whole second on the
+# clock however the phase falls, which at this cadence is five looks. The
+# product never runs this close to the granularity: its shortest wait is
+# MACON_INTERVAL_FLOOR.
 unset MACON_FAKE_NOW
 MACON_LID_CADENCE=0.2
 watch_state closed dark
@@ -466,10 +475,10 @@ _looks=0
 # shellcheck disable=SC2317,SC2329  # helper_wait calls this
 helper_check_display() { _looks=$((_looks + 1)); }
 _t0=$(date +%s)
-helper_wait 1
+helper_wait 2
 _elapsed=$(( $(date +%s) - _t0 ))
 
-assert_ok "a one second pause lasts at least a second" [ "$_elapsed" -ge 1 ]
+assert_ok "a two second pause lasts at least a second" [ "$_elapsed" -ge 1 ]
 assert_ok "and looks at the lid more than once while it waits" [ "$_looks" -ge 2 ]
 
 MACON_LID_CADENCE=0.5
