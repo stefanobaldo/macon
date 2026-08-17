@@ -115,6 +115,30 @@ must not go on holding the machine awake, so it is ended rather than trusted.
 `--hook-warn` runs `--pre-warn` minutes before the soft deadline. Both hooks run as
 you, not as root.
 
+## Closing the lid
+
+Close the lid on a live session and macon says so out loud — an alert tone, then
+`Mac on activated, 3 hours remaining`, counted to the hard ceiling. It is the only
+confirmation available once the screen is dark, and it repeats every time the lid
+is closed again, not once per session.
+
+macon also puts the display out. Disabling clamshell sleep disables the whole
+clamshell path, and turning the panel off was part of it, so without this the screen
+burns under a shut lid for as long as your `displaysleep` timer takes — or for ever,
+where that is `Never`.
+
+Two flags turn the noise down:
+
+| Flag | Effect |
+|---|---|
+| `--no-announce` | no tone and no speech; terminal output unchanged |
+| `--quiet` | implies `--no-announce`, and suppresses macon's own terminal output too |
+
+Neither touches system volume — macon does not change settings it would then have to
+restore, and a muted Mac simply stays silent. Neither hides warnings or errors either:
+those go to stderr, including the one that reports a restore that did not fully
+succeed. Under `macon run`, `--quiet` silences macon and never the command you wrapped.
+
 ## Reporting
 
 `macon report` renders a self-contained HTML file — one row per night, with the worst

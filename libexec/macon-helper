@@ -47,6 +47,11 @@ MACON_HOOK_TIMEOUT=30
 MACON_LID_CADENCE=0.5
 MACON_LID_GRACE=1
 
+# The alert that precedes the spoken phrase. A stock system sound, so there is
+# nothing to ship and nothing to find missing: with the lid shut the speaker is
+# muffled and the sentence can be lost, but the beep is unmistakable.
+MACON_ANNOUNCE_SOUND=/System/Library/Sounds/Glass.aiff
+
 _HELPER_TAB=$(printf '\t')
 
 # Consecutive polls seen off AC. It cannot be a shell variable: the loop reads
@@ -401,7 +406,31 @@ helper_finish() {
 # extra blank on a display that is already going dark.
 _HELPER_LAST_BLANK=0
 
-# Put the display out when the lid is shut and something has it lit.
+# Whether the lid already read shut at the previous look. The blank below is a
+# LEVEL and the announcement is an EDGE, and this one bit of memory is the whole
+# difference between them. It starts at 0 so a session armed with the lid
+# already down announces at its first look, which is the right answer: the user
+# has just typed the command and is closing the machine.
+_HELPER_LID_CLOSED=0
+
+# One look at the lid, feeding both watches, because the reading is the
+# expensive part: this runs twice a second for a whole night, and asking ioreg
+# the same question twice per cycle would double that for nothing.
+helper_check_lid() {
+    if ! plat_clamshell_closed; then
+        _HELPER_LID_CLOSED=0
+        return 0
+    fi
+
+    if [ "$_HELPER_LID_CLOSED" -eq 0 ]; then
+        _HELPER_LID_CLOSED=1
+        helper_announce "$1"
+    fi
+
+    helper_blank_display
+}
+
+# Put the display out when something has it lit under a shut lid.
 #
 # The condition is a LEVEL, not an edge: "the lid closed just now" would be
 # cheaper to detect, but it is wrong. Verified on real hardware -- open and
@@ -415,8 +444,7 @@ _HELPER_LAST_BLANK=0
 # never a Mac that cannot sleep. So the result is deliberately not checked --
 # the next check retries a second later anyway, and the helper's stderr goes to
 # /dev/null, so a warning per second would be noise nobody can read.
-helper_check_display() {
-    plat_clamshell_closed || return 0
+helper_blank_display() {
     plat_display_lit || return 0
 
     _now=$(macon_now)
@@ -426,6 +454,108 @@ helper_check_display() {
     _HELPER_LAST_BLANK=$_now
 
     plat_display_sleep_now || :
+}
+
+# A duration as something worth hearing rather than reading. The singulars are
+# not politeness: `say` reads "1 hours" exactly as written, and the phrase is
+# the only thing the user gets with the screen already dark.
+helper_speakable_duration() {
+    _sd_secs=$1
+    _sess_is_number "$_sd_secs" || return 1
+
+    _sd_h=$(( _sd_secs / 3600 ))
+    _sd_m=$(( (_sd_secs % 3600) / 60 ))
+
+    _sd_hw="hours"
+    [ "$_sd_h" -eq 1 ] && _sd_hw="hour"
+    _sd_mw="minutes"
+    [ "$_sd_m" -eq 1 ] && _sd_mw="minute"
+
+    if [ "$_sd_h" -gt 0 ] && [ "$_sd_m" -gt 0 ]; then
+        printf '%s %s and %s %s\n' "$_sd_h" "$_sd_hw" "$_sd_m" "$_sd_mw"
+    elif [ "$_sd_h" -gt 0 ]; then
+        printf '%s %s\n' "$_sd_h" "$_sd_hw"
+    elif [ "$_sd_m" -gt 0 ]; then
+        printf '%s %s\n' "$_sd_m" "$_sd_mw"
+    else
+        printf 'less than a minute\n'
+    fi
+}
+
+# Beep and speak, on the user's own audio session.
+#
+# Verified on the real machine, and it is the whole reason this is not three
+# lines: `say` run as root returns 0 and produces NO SOUND. Speech synthesis is
+# a per-user service the root domain cannot reach, and it fails silently rather
+# than reporting anything -- the exit status is 0 either way. `afplay` as root
+# does play, but the beep and the phrase go through the same path deliberately:
+# two mechanisms for one announcement is how a beep with no phrase survives
+# unnoticed for a month.
+#
+# `launchctl asuser` rather than `sudo -u` alone. Both work today, because the
+# helper is started from the user's terminal and inherits its GUI session. Only
+# asuser keeps working if the helper is ever moved under a launchd system
+# daemon, and that regression would be invisible for the same reason the root
+# case is: status 0, no sound, nothing in any log.
+helper_say_as_user() {
+    _sa_user=$1
+    _sa_phrase=$2
+
+    _sa_uid=$(id -u "$_sa_user" 2>/dev/null) || return 0
+    _sess_is_number "$_sa_uid" || return 0
+
+    # Detached, and the result deliberately unchecked. This runs inside the
+    # half-second lid cadence while `say` takes seconds to finish a sentence, so
+    # waiting would stretch every slice the announcement lands in. Like the
+    # blank, a failed announcement is cosmetic: it can never leave the Mac
+    # unable to sleep.
+    #
+    # Arguments stay arguments. Building `sh -c "say '$_sa_phrase'"` would put
+    # the phrase through a round of shell parsing it has no business surviving,
+    # and this file's rule is that root evaluates nothing.
+    (
+        launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
+            afplay "$MACON_ANNOUNCE_SOUND"
+        launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
+            say "$_sa_phrase"
+    ) >/dev/null 2>&1 &
+}
+
+# Say that the session is holding, and for how much longer.
+#
+# "Mac on", two words, and not the tool's name: `say` reads "macon" as one word
+# and pronounces it "mayken". The phrase is the only thing the user gets with
+# the screen already dark, so it has to survive being heard rather than read.
+#
+# The ceiling rather than the soft deadline. It is the one bound no policy can
+# move, so the number needs no branch here -- and under the default policy the
+# two are the same instant anyway. With `--on-expire extend` the session may end
+# before what is spoken; the soft deadline would be wrong in the other
+# direction, and is a number the user cannot act on with the lid already shut.
+#
+# Every early return is silent. This is the last thing in the loop that may
+# raise its voice about anything.
+helper_announce() {
+    _an_d=$1
+
+    # Absence means announce. A descriptor written before this field existed
+    # must not read as a silenced session, and the compare is a STRING compare
+    # for the reason session.sh documents at length: an unexpected value in an
+    # arithmetic context is not a false comparison on this shell, it is a fatal
+    # error that takes the helper down with it.
+    [ "$(sess_get "$_an_d" announce)" = "0" ] && return 0
+
+    _an_user=$(sess_get "$_an_d" user)
+    _sess_is_name "$_an_user" || return 0
+
+    _an_ceiling=$(sess_get "$_an_d" hard_ceiling)
+    _sess_is_number "$_an_ceiling" || return 0
+
+    _an_left=$(( _an_ceiling - $(macon_now) ))
+    [ "$_an_left" -lt 0 ] && _an_left=0
+
+    helper_say_as_user "$_an_user" \
+        "Mac on activated, $(helper_speakable_duration "$_an_left") remaining."
 }
 
 # How long the next pause lasts. A separate function because the interesting
@@ -456,7 +586,7 @@ helper_wait_seconds() {
 helper_wait() {
     _until=$(( $(macon_now) + $(helper_wait_seconds "$1") ))
     while [ "$(macon_now)" -lt "$_until" ]; do
-        helper_check_display
+        helper_check_lid "$2"
         sleep "$MACON_LID_CADENCE"
     done
 }
@@ -500,7 +630,7 @@ helper_loop() {
                 return 0
                 ;;
         esac
-        helper_wait "$(sess_get "$_d" interval)"
+        helper_wait "$(sess_get "$_d" interval)" "$_d"
     done
 }
 

@@ -406,18 +406,33 @@ watch_state() {
 MACON_FAKE_NOW=1700000000
 _HELPER_LAST_BLANK=0
 
+setup_desc
+
+# The real emitter shells out to launchctl, afplay and say. Stubbed to record
+# what it was asked to speak, which is the whole of what this loop owns:
+# whether macOS actually makes a sound is not something a unit test can observe,
+# and the one thing that matters about it -- that `say` as root returns 0 while
+# producing nothing -- was settled on real hardware, not here.
+ANNOUNCED="$MACON_STATE/announced"
+: > "$ANNOUNCED"
+# shellcheck disable=SC2317,SC2329  # helper_announce calls this
+helper_say_as_user() { printf '%s|%s\n' "$1" "$2" >> "$ANNOUNCED"; }
+announce_reset() { : > "$ANNOUNCED"; }
+announce_count() { grep -c . "$ANNOUNCED" || :; }
+
 watch_state open lit
-helper_check_display
+helper_check_lid "$D"
 assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
     "an open lid is left alone, however lit the screen is"
 
 watch_state closed dark
-helper_check_display
+helper_check_lid "$D"
 assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
     "a shut lid over a dark panel is left alone"
 
+_HELPER_LID_CLOSED=0
 watch_state closed lit
-helper_check_display
+helper_check_lid "$D"
 assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
     "a lit panel under a shut lid is blanked"
 
@@ -425,7 +440,7 @@ assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
 # lit panel. Blanking again there would fire on a screen that is already going
 # out, once per cadence, for as long as the fade lasts.
 watch_state closed lit
-helper_check_display
+helper_check_lid "$D"
 assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
     "a panel still fading is not blanked again inside the grace"
 
@@ -442,9 +457,119 @@ assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
 # lights, and that is all it needs.
 MACON_FAKE_NOW=1700000002
 watch_state closed lit
-helper_check_display
+helper_check_lid "$D"
 assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
     "a panel relit under a lid that never read open is blanked again"
+
+# And the same flick says nothing. The blank is a level because the panel can
+# relight under a lid that never read open; the announcement is an edge because
+# the user did not reopen anything, and a phrase per cadence for a whole night
+# is the failure mode a level would have here.
+announce_reset
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "0" "$(announce_count)" \
+    "a panel relit under a lid that never read open announces nothing"
+
+# --- the announcement -------------------------------------------------------
+#
+# Same lid, same half-second cadence, opposite condition: an EDGE. The level
+# that is right for the panel would speak once per cadence for as long as the
+# lid stayed shut.
+
+MACON_FAKE_NOW=1700000000
+
+announce_reset
+_HELPER_LID_CLOSED=0
+watch_state open lit
+helper_check_lid "$D"
+assert_eq "0" "$(announce_count)" "an open lid announces nothing"
+
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "1" "$(announce_count)" "the lid closing announces once"
+
+announce_reset
+watch_state closed lit
+helper_check_lid "$D"
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "0" "$(announce_count)" \
+    "and a lid that stays shut does not announce again at every look"
+
+announce_reset
+watch_state open lit
+helper_check_lid "$D"
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "1" "$(announce_count)" "reopening and closing again announces again"
+
+# The blank needs a lit panel; the announcement does not. Hanging the phrase off
+# the blank -- the obvious place, since that is where the lid is already being
+# watched -- would go silent in exactly the case where the user closed the lid
+# on a screen that had already timed out.
+announce_reset
+_HELPER_LID_CLOSED=0
+watch_state closed dark
+helper_check_lid "$D"
+assert_eq "1" "$(announce_count)" "a lid shut over a dark panel still announces"
+
+announce_reset
+_HELPER_LID_CLOSED=0
+watch_state closed lit
+helper_check_lid "$D"
+# "Mac on", two words. The tool's own name is not spoken because `say` reads
+# "macon" as "mayken", and the phrase exists to be heard, not read.
+assert_contains "$(cat "$ANNOUNCED")" "Mac on activated" \
+    "the phrase names the tool in a form that survives being spoken"
+assert_contains "$(cat "$ANNOUNCED")" "2 hours remaining" \
+    "and how long the hard ceiling still allows"
+assert_contains "$(cat "$ANNOUNCED")" "$(id -un)|" \
+    "and it is spoken as the session's user, never as root"
+
+# --no-announce. Absence of the field means announce: a descriptor written
+# before this existed must not be read as a silent one, and the flag the user
+# typed is the only thing that turns it off.
+announce_reset
+sess_set "$D" announce 0
+_HELPER_LID_CLOSED=0
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "0" "$(announce_count)" "a session armed with --no-announce stays silent"
+
+announce_reset
+sess_set "$D" announce 1
+_HELPER_LID_CLOSED=0
+watch_state closed lit
+helper_check_lid "$D"
+assert_eq "1" "$(announce_count)" "and one armed without it speaks"
+
+# An unreadable ceiling is not a reason to speak nonsense. It is also not a
+# reason to fail: the announcement is cosmetic, and the session goes on.
+announce_reset
+sess_set "$D" hard_ceiling "not-a-number"
+_HELPER_LID_CLOSED=0
+watch_state closed lit
+assert_ok "an unreadable ceiling does not fail the watch" helper_check_lid "$D"
+assert_eq "0" "$(announce_count)" "and announces nothing rather than a bad duration"
+setup_desc
+
+# --- speakable durations ----------------------------------------------------
+#
+# Spoken, not printed, so the singulars matter: `say` reads "1 hours" exactly as
+# written.
+assert_eq "2 hours" "$(helper_speakable_duration 7200)" "whole hours"
+assert_eq "1 hour" "$(helper_speakable_duration 3600)" "one hour is singular"
+assert_eq "5 hours and 20 minutes" "$(helper_speakable_duration 19200)" \
+    "hours and minutes together"
+assert_eq "1 hour and 1 minute" "$(helper_speakable_duration 3660)" \
+    "and both singular at once"
+assert_eq "20 minutes" "$(helper_speakable_duration 1200)" "minutes alone"
+assert_eq "1 minute" "$(helper_speakable_duration 60)" "one minute is singular"
+assert_eq "less than a minute" "$(helper_speakable_duration 30)" \
+    "a remainder too small to name"
+assert_eq "less than a minute" "$(helper_speakable_duration 0)" \
+    "and a ceiling already reached"
 
 # --- the pause --------------------------------------------------------------
 #
@@ -473,9 +598,9 @@ MACON_LID_CADENCE=0.2
 watch_state closed dark
 _looks=0
 # shellcheck disable=SC2317,SC2329  # helper_wait calls this
-helper_check_display() { _looks=$((_looks + 1)); }
+helper_check_lid() { _looks=$((_looks + 1)); }
 _t0=$(date +%s)
-helper_wait 2
+helper_wait 2 "$D"
 _elapsed=$(( $(date +%s) - _t0 ))
 
 assert_ok "a two second pause lasts at least a second" [ "$_elapsed" -ge 1 ]
