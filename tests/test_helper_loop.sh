@@ -408,17 +408,13 @@ _HELPER_LAST_BLANK=0
 
 setup_desc
 
-# The real emitter shells out to launchctl, afplay and say. Stubbed to record
-# what it was asked to speak, which is the whole of what this loop owns:
-# whether macOS actually makes a sound is not something a unit test can observe,
-# and the one thing that matters about it -- that `say` as root returns 0 while
-# producing nothing -- was settled on real hardware, not here.
-ANNOUNCED="$MACON_STATE/announced"
-: > "$ANNOUNCED"
-# shellcheck disable=SC2317,SC2329  # helper_announce calls this
-helper_say_as_user() { printf '%s|%s\n' "$1" "$2" >> "$ANNOUNCED"; }
-announce_reset() { : > "$ANNOUNCED"; }
-announce_count() { grep -c . "$ANNOUNCED" || :; }
+# The announcement is recorded by the platform fake, exactly like the blank
+# below it, so nothing here can reach a speaker. Whether macOS actually makes a
+# sound is not something a unit test can observe anyway -- and the one thing
+# that matters about it, that `say` as root returns 0 while producing nothing,
+# was settled on real hardware rather than here.
+announce_reset() { fake_reset_calls; }
+announce_count() { fake_call_count 'say_as_user'; }
 
 watch_state open lit
 helper_check_lid "$D"
@@ -520,11 +516,11 @@ watch_state closed lit
 helper_check_lid "$D"
 # "Mac on", two words. The tool's own name is not spoken because `say` reads
 # "macon" as "mayken", and the phrase exists to be heard, not read.
-assert_contains "$(cat "$ANNOUNCED")" "Mac on activated" \
+assert_contains "$(fake_calls)" "Mac on activated" \
     "the phrase names the tool in a form that survives being spoken"
-assert_contains "$(cat "$ANNOUNCED")" "2 hours remaining" \
+assert_contains "$(fake_calls)" "2 hours remaining" \
     "and how long the hard ceiling still allows"
-assert_contains "$(cat "$ANNOUNCED")" "$(id -un)|" \
+assert_contains "$(fake_calls)" "say_as_user $(id -un) " \
     "and it is spoken as the session's user, never as root"
 
 # --no-announce. Absence of the field means announce: a descriptor written

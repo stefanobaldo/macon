@@ -98,6 +98,16 @@ plat_display_sleep_now() {
     fake_set display dark
 }
 
+# Recorded, never spoken. This is the reason the real one lives in
+# lib/platform.sh rather than in the helper that calls it: every test file loads
+# this fake, so no run of the suite can reach a speaker -- not on a maintainer's
+# machine and not on a CI runner, where `say` is installed too. The phrase is
+# recorded whole because it carries a computed duration, and "it announced" is a
+# weaker assertion than "it announced this".
+plat_say_as_user() {
+    fake_record "say_as_user $1 $2"
+}
+
 plat_power_source() { fake_get_or power_source ac; }
 
 plat_battery_pct() { fake_get_or battery_pct 100; }
