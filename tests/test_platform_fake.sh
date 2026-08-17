@@ -42,4 +42,44 @@ assert_contains "$(fake_calls)" "pmset_apply_ac sleep 0 disksleep 0 powernap 0" 
     "apply records every key in one call"
 assert_eq "0" "$(plat_pmset_read sleep)" "apply updates the fake's state"
 
+fake_reset_calls
+plat_say_as_user someone "Mac on activated, 2 hours remaining."
+assert_eq "1" "$(fake_call_count 'say_as_user')" \
+    "the announcement is recorded rather than spoken"
+assert_contains "$(fake_calls)" "say_as_user someone Mac on activated" \
+    "and records who it would be spoken as, and what was said"
+
+# --- fake/real parity -------------------------------------------------------
+#
+# This file REPLACES lib/platform.sh in every test that loads it; it is not an
+# overlay. So a plat_ function the real file defines and this one does not is a
+# "command not found" at best -- and for anything that touches hardware, a test
+# reaching the real machine instead of the fake.
+#
+# plat_say_as_user is what made this worth pinning. A suite that can speak is a
+# suite that speaks out loud on whoever runs it, and on a CI runner too: GitHub's
+# macOS images ship `say` like any other Mac. Keeping that from happening is a
+# property of where the function lives, and this is the assertion that keeps it
+# living there.
+#
+# plat_needs_sudo is the only one allowed to be absent, and deliberately so:
+# there is no machine behind a pure predicate, and it is tested by calling the
+# real one because the branch that matters -- uid 0 running direct -- cannot be
+# reached by a suite that does not run as root.
+PURE_PREDICATES='plat_needs_sudo'
+
+_real_list="$MACON_STATE/plat-real"
+_fake_list="$MACON_STATE/plat-fake"
+grep -oE '^plat_[a-z_0-9]+\(\)' "$MACON_LIB/platform.sh" | tr -d '()' | sort > "$_real_list"
+grep -oE '^plat_[a-z_0-9]+\(\)' "$TESTS_DIR/fake-platform.sh" | tr -d '()' | sort > "$_fake_list"
+
+# A regex that stopped matching would make every assertion below vacuously
+# true, which is the failure mode of comparing two empty lists.
+assert_ok "the parity check found functions to compare" \
+    [ "$(wc -l < "$_real_list")" -gt 10 ]
+
+_unfaked=$(comm -23 "$_real_list" "$_fake_list" | grep -vxF "$PURE_PREDICATES" || :)
+assert_eq "" "$_unfaked" \
+    "every machine-touching plat_ function has a fake, so no test reaches the real Mac"
+
 teardown_state

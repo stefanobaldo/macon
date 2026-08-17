@@ -106,6 +106,66 @@ plat_display_sleep_now() {
     _plat_root_run pmset displaysleepnow
 }
 
+# The alert that precedes the spoken phrase. A stock system sound, so there is
+# nothing to ship and nothing to find missing: with the lid shut the speaker is
+# muffled and the sentence can be lost, but the tone is unmistakable.
+MACON_ANNOUNCE_SOUND=/System/Library/Sounds/Glass.aiff
+
+# Beep and speak, on the user's own audio session.
+#
+# This lives here, with the other things that touch the real machine, and not
+# in the helper that calls it. That is not tidiness: it is what keeps the test
+# suite quiet. Every test loads tests/fake-platform.sh, so the fake is what
+# answers here and no run of the suite can ever reach a speaker -- on this
+# machine or on a CI runner, where `say` is also installed. A version of this
+# living in the helper would be silent only for as long as every test file
+# remembered to stub it, which is a convention, not a guarantee.
+#
+# Verified on the real machine, and it is the whole reason this is not three
+# lines: `say` run as root returns 0 and produces NO SOUND. Speech synthesis is
+# a per-user service the root domain cannot reach, and it fails silently rather
+# than reporting anything -- the exit status is 0 either way. `afplay` as root
+# does play, but the tone and the phrase go through the same path deliberately:
+# two mechanisms for one announcement is how a tone with no phrase survives
+# unnoticed for a month.
+#
+# `launchctl asuser` rather than `sudo -u` alone. Both work today, because the
+# helper is started from the user's terminal and inherits its GUI session. Only
+# asuser keeps working if the helper is ever moved under a launchd system
+# daemon, and that regression would be invisible for the same reason the root
+# case is: status 0, no sound, nothing in any log.
+plat_say_as_user() {
+    _plat_user=$1
+    _plat_phrase=$2
+
+    _plat_uid=$(id -u "$_plat_user" 2>/dev/null) || return 0
+    case "$_plat_uid" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+
+    # Detached, and the result deliberately unchecked. This runs inside the
+    # half-second lid cadence while `say` takes seconds to finish a sentence, so
+    # waiting would stretch every slice the announcement lands in. Like the
+    # blank, a failed announcement is cosmetic: it can never leave the Mac
+    # unable to sleep.
+    #
+    # Arguments stay arguments. Building `sh -c "say '$_plat_phrase'"` would put
+    # the phrase through a round of shell parsing it has no business surviving,
+    # and the helper's rule is that root evaluates nothing.
+    #
+    # stdin is closed explicitly, as it is everywhere else this project puts a
+    # process in the background. Root never gets a password prompt out of `sudo
+    # -u`, and `launchctl asuser` would not have got this far without being
+    # root -- but that is an invariant held in another file, and a prompt
+    # reading the helper's own stdin is not a failure anyone would find.
+    (
+        launchctl asuser "$_plat_uid" sudo -u "$_plat_user" \
+            afplay "$MACON_ANNOUNCE_SOUND"
+        launchctl asuser "$_plat_uid" sudo -u "$_plat_user" \
+            say "$_plat_phrase"
+    ) < /dev/null > /dev/null 2>&1 &
+}
+
 plat_power_source() {
     if pmset -g batt 2>/dev/null | grep -q "'AC Power'"; then
         printf 'ac\n'

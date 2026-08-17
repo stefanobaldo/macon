@@ -47,11 +47,6 @@ MACON_HOOK_TIMEOUT=30
 MACON_LID_CADENCE=0.5
 MACON_LID_GRACE=1
 
-# The alert that precedes the spoken phrase. A stock system sound, so there is
-# nothing to ship and nothing to find missing: with the lid shut the speaker is
-# muffled and the sentence can be lost, but the beep is unmistakable.
-MACON_ANNOUNCE_SOUND=/System/Library/Sounds/Glass.aiff
-
 _HELPER_TAB=$(printf '\t')
 
 # Consecutive polls seen off AC. It cannot be a shell variable: the loop reads
@@ -482,51 +477,6 @@ helper_speakable_duration() {
     fi
 }
 
-# Beep and speak, on the user's own audio session.
-#
-# Verified on the real machine, and it is the whole reason this is not three
-# lines: `say` run as root returns 0 and produces NO SOUND. Speech synthesis is
-# a per-user service the root domain cannot reach, and it fails silently rather
-# than reporting anything -- the exit status is 0 either way. `afplay` as root
-# does play, but the beep and the phrase go through the same path deliberately:
-# two mechanisms for one announcement is how a beep with no phrase survives
-# unnoticed for a month.
-#
-# `launchctl asuser` rather than `sudo -u` alone. Both work today, because the
-# helper is started from the user's terminal and inherits its GUI session. Only
-# asuser keeps working if the helper is ever moved under a launchd system
-# daemon, and that regression would be invisible for the same reason the root
-# case is: status 0, no sound, nothing in any log.
-helper_say_as_user() {
-    _sa_user=$1
-    _sa_phrase=$2
-
-    _sa_uid=$(id -u "$_sa_user" 2>/dev/null) || return 0
-    _sess_is_number "$_sa_uid" || return 0
-
-    # Detached, and the result deliberately unchecked. This runs inside the
-    # half-second lid cadence while `say` takes seconds to finish a sentence, so
-    # waiting would stretch every slice the announcement lands in. Like the
-    # blank, a failed announcement is cosmetic: it can never leave the Mac
-    # unable to sleep.
-    #
-    # Arguments stay arguments. Building `sh -c "say '$_sa_phrase'"` would put
-    # the phrase through a round of shell parsing it has no business surviving,
-    # and this file's rule is that root evaluates nothing.
-    #
-    # stdin is closed explicitly, as it is everywhere else this file puts a
-    # process in the background. Root never gets a password prompt out of `sudo
-    # -u`, and `launchctl asuser` would not have got this far without being
-    # root -- but that is an invariant held somewhere else in the file, and a
-    # prompt reading the helper's own stdin is not a failure anyone would find.
-    (
-        launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
-            afplay "$MACON_ANNOUNCE_SOUND"
-        launchctl asuser "$_sa_uid" sudo -u "$_sa_user" \
-            say "$_sa_phrase"
-    ) < /dev/null > /dev/null 2>&1 &
-}
-
 # Say that the session is holding, and for how much longer.
 #
 # "Mac on", two words, and not the tool's name: `say` reads "macon" as one word
@@ -560,7 +510,7 @@ helper_announce() {
     _an_left=$(( _an_ceiling - $(macon_now) ))
     [ "$_an_left" -lt 0 ] && _an_left=0
 
-    helper_say_as_user "$_an_user" \
+    plat_say_as_user "$_an_user" \
         "Mac on activated, $(helper_speakable_duration "$_an_left") remaining."
 }
 
