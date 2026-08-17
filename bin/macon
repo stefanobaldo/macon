@@ -121,6 +121,10 @@ options for on and run:
   --interval <seconds>     sampling interval (default: 300, floor 30)
   --allow-battery          allow starting on battery
   --no-failsafe            allow starting without the boot failsafe
+  --no-announce            do not speak when the lid closes
+  --quiet                  say nothing at all: implies --no-announce and
+                           suppresses this command's own output (warnings,
+                           errors and a wrapped command's output are kept)
 USAGE
 }
 
@@ -144,6 +148,8 @@ cli_parse_on() {
     OPT_INTERVAL=300
     OPT_ALLOW_BATTERY=0
     OPT_NO_FAILSAFE=0
+    OPT_ANNOUNCE=1
+    OPT_QUIET=0
     OPT_WRAP=0
     # Not an option: no flag sets it. `run` fills it in with the process it
     # started, which is the one descriptor field that cannot be known until
@@ -179,6 +185,12 @@ cli_parse_on() {
             --interval)      cli_need_arg "$@" || return 1; OPT_INTERVAL=$2; shift 2 ;;
             --allow-battery) OPT_ALLOW_BATTERY=1; shift ;;
             --no-failsafe)   OPT_NO_FAILSAFE=1; shift ;;
+            --no-announce)   OPT_ANNOUNCE=0; shift ;;
+            # --quiet is the superset: everything macon would have said, by
+            # either channel. It implies --no-announce rather than living
+            # beside it, because a flag named for silence that still speaks in
+            # the dark is a promise broken in the one place nobody is watching.
+            --quiet)         OPT_QUIET=1; OPT_ANNOUNCE=0; shift ;;
             *)               macon_warn "unknown option: $1"; return 1 ;;
         esac
     done
@@ -303,6 +315,26 @@ cli_check_environment() {
     if ! cli_is_number "$_major" || [ "$_major" -lt "$MACON_MIN_MACOS" ]; then
         macon_die "macOS $MACON_MIN_MACOS or later is required (found $(sw_vers -productVersion 2>/dev/null))"
     fi
+}
+
+# Progress on stdout, unless --quiet asked for none.
+#
+# What it does NOT silence is the point. macon_warn and macon_die write to
+# stderr and go through neither this nor anything like it, so every warning
+# survives --quiet -- including the one that matters most, the rollback that did
+# not fully succeed. Someone who asked for quiet asked for less chatter, not for
+# a Mac that fails to restore without mentioning it.
+#
+# A function rather than a redirection of the whole command, because of `macon
+# run`: the wrapped command inherits macon's stdout directly, so silencing the
+# stream would swallow the output of the user's own job along with macon's.
+#
+# The default keeps `off`, `status` and the rest working: they never parse
+# --quiet, so OPT_QUIET is unset for them and `set -u` would otherwise be fatal.
+cli_out() {
+    [ "${OPT_QUIET:-0}" -eq 1 ] && return 0
+    # shellcheck disable=SC2059  # every format string here is this file's own
+    printf "$@"
 }
 
 # Undoes whatever the ladder had managed to apply. The message matters as much
@@ -526,8 +558,8 @@ cli_preflight() {
     if ! snap_save; then
         macon_die "the machine already looks modified and no fresh snapshot could be taken; run 'macon off', or restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
     fi
-    printf 'saved original power state to %s\n' "$(snap_path)"
-    printf 'plist backup in %s\n' "$(snap_backup_plists)"
+    cli_out 'saved original power state to %s\n' "$(snap_path)"
+    cli_out 'plist backup in %s\n' "$(snap_backup_plists)"
 }
 
 # Builds the hand-over descriptor from the OPT_* set cli_parse_on published, and
@@ -559,6 +591,7 @@ cli_start_session() {
     cli_desc_set "$_d" hook_end "$OPT_HOOK_END"
     cli_desc_set "$_d" hook_warn "$OPT_HOOK_WARN"
     cli_desc_set "$_d" busy_timeout 30
+    cli_desc_set "$_d" announce "$OPT_ANNOUNCE"
 
     # A descriptor holds exactly one completion source, so the order here is a
     # precedence rule. The wrapped process comes first because it is the whole
@@ -600,13 +633,18 @@ cli_start_session() {
     rm -f "$_d"
 
     if [ "$OPT_SENTINEL" -eq 1 ]; then
+        # Printed even under --quiet, and it is the one exception. This path is
+        # the ONLY place the sentinel is ever named -- `macon status` does not
+        # show it -- so silencing it would not make `--sentinel --quiet` quiet,
+        # it would make it useless. Quiet suppresses macon talking about itself,
+        # not data the user asked for by typing a flag.
         printf 'sentinel: %s\n' "$_sentinel"
-        printf 'write that file when the work is done and macon will restore and sleep.\n'
+        cli_out 'write that file when the work is done and macon will restore and sleep.\n'
     fi
-    printf 'armed until %s (ceiling %s)\n' \
+    cli_out 'armed until %s (ceiling %s)\n' \
         "$(date -r "$_soft" '+%H:%M')" \
         "$(date -r "$_hard" '+%H:%M')"
-    printf 'safe to close the lid.\n'
+    cli_out 'safe to close the lid.\n'
     return 0
 }
 
@@ -1029,7 +1067,7 @@ cli_cmd_run() {
     cli_start_session || exit 1
     MACON_WRAP_ARMED=1
 
-    printf 'watching pid %s; the session ends when it exits.\n' "$MACON_WRAP_PID"
+    cli_out 'watching pid %s; the session ends when it exits.\n' "$MACON_WRAP_PID"
     wait "$MACON_WRAP_PID"
     _rc=$?
     printf 'the wrapped command exited with %s\n' "$_rc"

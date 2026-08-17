@@ -13,7 +13,7 @@ _macon() {
     local subcommands='on run off status report saved log failsafe version help'
     local on_opts='--max --on-expire --extend-by --busy-check --sentinel
                    --hook-end --hook-warn --pre-warn --interval
-                   --allow-battery --no-failsafe'
+                   --allow-battery --no-failsafe --no-announce --quiet'
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         mapfile -t COMPREPLY < <(compgen -W "$subcommands" -- "$cur")

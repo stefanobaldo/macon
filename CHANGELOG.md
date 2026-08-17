@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Closing the lid on a live session now plays an alert tone and speaks
+  `Mac on activated, <time> remaining`, counted to the hard ceiling. With the
+  screen already dark it is the only confirmation the session is holding. The
+  trigger is the lid closing, not the display blanking, so a lid shut over a
+  screen that had already timed out still announces.
+- `--no-announce` silences that announcement, and `--quiet` implies it while
+  also suppressing macon's own terminal output. Warnings and errors are
+  unaffected — they go to stderr — and under `macon run` neither flag touches
+  the output of the wrapped command.
 - `macon status` reports the version it is running, as its first row. The bug
   report template asks for this output, which previously could describe a
   problem without saying which macon had it.

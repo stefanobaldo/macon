@@ -22,6 +22,66 @@ assert_eq "restore" "$OPT_POLICY" "policy defaults to restore"
 assert_eq "300" "$OPT_INTERVAL" "interval defaults to 300"
 assert_eq "8" "$OPT_MAX" "the ceiling defaults to the soft deadline"
 
+assert_eq "1" "$OPT_ANNOUNCE" "the lid announcement is on unless it is turned off"
+assert_eq "0" "$OPT_QUIET" "and nothing is suppressed by default"
+
+# --- silence ----------------------------------------------------------------
+#
+# Two flags, one of which contains the other. --quiet is the superset because a
+# flag named for silence that still speaks aloud in a dark room breaks its
+# promise in the one place nobody is watching -- so it implies --no-announce
+# rather than sitting beside it.
+
+cli_parse_on 8 --no-announce
+assert_eq "0" "$OPT_ANNOUNCE" "--no-announce silences the lid announcement"
+assert_eq "0" "$OPT_QUIET" "and leaves the terminal output alone"
+
+cli_parse_on 8 --quiet
+assert_eq "1" "$OPT_QUIET" "--quiet suppresses macon's own output"
+assert_eq "0" "$OPT_ANNOUNCE" "and implies --no-announce"
+
+# Order cannot matter: a user who typed both, either way round, gets silence.
+cli_parse_on 8 --quiet --no-announce
+assert_eq "1" "$OPT_QUIET" "both flags together stay quiet"
+assert_eq "0" "$OPT_ANNOUNCE" "and stay unannounced"
+cli_parse_on 8 --no-announce --quiet
+assert_eq "1" "$OPT_QUIET" "in either order"
+assert_eq "0" "$OPT_ANNOUNCE" "in either order, announcement too"
+
+# And the default is restored by the next parse rather than sticking: OPT_* are
+# globals, and a flag that leaked across calls would silence a later session
+# nobody asked to silence.
+cli_parse_on 8
+assert_eq "1" "$OPT_ANNOUNCE" "a later parse without the flags announces again"
+assert_eq "0" "$OPT_QUIET" "and talks again"
+
+# --- what --quiet actually silences -----------------------------------------
+#
+# The gate is a function, not a redirection of the whole command, because
+# `macon run` hands its stdout to the wrapped command: silencing the stream
+# would swallow the user's own job output along with macon's.
+
+OPT_QUIET=0
+assert_eq "hello" "$(cli_out 'hello')" "output passes through when not quiet"
+assert_eq "n=7" "$(cli_out 'n=%s' 7)" "and formats its arguments"
+
+OPT_QUIET=1
+assert_eq "" "$(cli_out 'hello')" "and is suppressed when quiet"
+
+# The line that must never be silenced. macon_warn writes to stderr and goes
+# through no gate at all, so a --quiet session that fails to restore still says
+# so -- which is the whole reason the split is stdout/stderr and not a flag
+# consulted in two places.
+assert_eq "macon: boom" "$(macon_warn boom 2>&1 1>/dev/null)" \
+    "warnings are untouched by quiet"
+
+# `macon off` and `macon status` never parse --quiet, so OPT_QUIET is unset for
+# them and `set -u` would make this fatal without the default.
+unset OPT_QUIET
+assert_eq "hi" "$(cli_out 'hi')" \
+    "a subcommand that never parses the flag still prints"
+OPT_QUIET=0
+
 assert_fail "a missing duration is rejected" cli_parse_on
 assert_fail "a non-numeric duration is rejected" cli_parse_on abc
 assert_fail "an unknown flag is rejected" cli_parse_on 8 --nope

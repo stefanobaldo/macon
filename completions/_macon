@@ -33,6 +33,8 @@ _macon() {
         '--interval[sampling interval, in seconds]:seconds:'
         '--allow-battery[allow starting on battery]'
         '--no-failsafe[allow starting without the boot failsafe]'
+        '--no-announce[do not speak when the lid closes]'
+        '--quiet[say nothing at all: implies --no-announce]'
     )
 
     _arguments -C \
