@@ -31,7 +31,7 @@ _macon() {
         '--hook-warn[run before the soft deadline]:command:'
         '--pre-warn[warning lead time, in minutes]:minutes:'
         '--interval[sampling interval, in seconds]:seconds:'
-        '--force[allow starting on battery]'
+        '--allow-battery[allow starting on battery]'
         '--no-failsafe[allow starting without the boot failsafe]'
     )
 

@@ -182,7 +182,7 @@ clean_machine
 fake_set power_source battery
 assert_fail "on refuses to start on battery" try_on 8 --no-failsafe
 assert_eq "0" "$(fake_call_count 'pmset')" "the battery refusal touched nothing"
-assert_ok "on battery, --force starts anyway" try_on 8 --no-failsafe --force
+assert_ok "on battery, --allow-battery starts anyway" try_on 8 --no-failsafe --allow-battery
 kill_stub
 
 clean_machine
