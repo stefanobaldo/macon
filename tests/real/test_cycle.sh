@@ -10,6 +10,8 @@
 set -u
 # shellcheck source=tests/helpers.sh
 . "$TESTS_DIR/helpers.sh"
+# shellcheck source=tests/real/installed.sh
+. "$TESTS_DIR/real/installed.sh"
 
 [ "${MACON_REAL_TESTS:-0}" = "1" ] || { printf '  skipped (set MACON_REAL_TESTS=1)\n'; exit 0; }
 
@@ -73,6 +75,26 @@ trap real_safety_net EXIT
 # --- preconditions ------------------------------------------------------
 
 assert_ok "macon is installed and on PATH" command -v macon
+
+# This suite calls `macon`, which is the INSTALLED tool -- and an install is a
+# copy taken at some earlier moment, not a view of this checkout. A branch that
+# leaves bin/macon untouched installs nothing the suite invokes directly, so
+# every assertion below passes against a prefix holding none of the code under
+# review. That is not hypothetical: it is how a full green run came to be read
+# as verifying a helper it had never loaded.
+#
+# The prefix is derived from the tool actually found rather than assumed to be
+# /usr/local, so a MACON_PREFIX install is checked against the tree it came from.
+REAL_PREFIX=$(cd "$(dirname "$(command -v macon)")/.." && pwd)
+REAL_DRIFT=$(real_installed_drift "$REPO_DIR" "$REAL_PREFIX") && REAL_DRIFT_RC=0 ||
+    REAL_DRIFT_RC=1
+if [ "$REAL_DRIFT_RC" -ne 0 ]; then
+    printf '  the installed tree under %s is not this checkout:\n' "$REAL_PREFIX" >&2
+    printf '%s\n' "$REAL_DRIFT" | sed 's/^/    | /' >&2
+    printf '  run: sh install.sh -- then try again.\n' >&2
+fi
+assert_eq "0" "$REAL_DRIFT_RC" "the installed tree is the code in this checkout"
+
 assert_ok "the machine is on AC power" \
     sh -c "pmset -g batt | grep -q \"'AC Power'\""
 assert_fail "the machine starts with sleep enabled" real_sleep_disabled
