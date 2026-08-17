@@ -119,7 +119,7 @@ options for on and run:
   --hook-warn <cmd>        run --pre-warn minutes before the soft deadline
   --pre-warn <minutes>     warning lead time (default: 15)
   --interval <seconds>     sampling interval (default: 300, floor 30)
-  --force                  allow starting on battery
+  --allow-battery          allow starting on battery
   --no-failsafe            allow starting without the boot failsafe
 USAGE
 }
@@ -142,7 +142,7 @@ cli_parse_on() {
     OPT_HOOK_WARN=""
     OPT_PRE_WARN=15
     OPT_INTERVAL=300
-    OPT_FORCE=0
+    OPT_ALLOW_BATTERY=0
     OPT_NO_FAILSAFE=0
     OPT_WRAP=0
     # Not an option: no flag sets it. `run` fills it in with the process it
@@ -168,18 +168,18 @@ cli_parse_on() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --max)         cli_need_arg "$@" || return 1; OPT_MAX=$2; shift 2 ;;
-            --on-expire)   cli_need_arg "$@" || return 1; OPT_POLICY=$2; shift 2 ;;
-            --extend-by)   cli_need_arg "$@" || return 1; OPT_EXTEND_BY=$2; shift 2 ;;
-            --busy-check)  cli_need_arg "$@" || return 1; OPT_BUSY_CHECK=$2; shift 2 ;;
-            --sentinel)    OPT_SENTINEL=1; shift ;;
-            --hook-end)    cli_need_arg "$@" || return 1; OPT_HOOK_END=$2; shift 2 ;;
-            --hook-warn)   cli_need_arg "$@" || return 1; OPT_HOOK_WARN=$2; shift 2 ;;
-            --pre-warn)    cli_need_arg "$@" || return 1; OPT_PRE_WARN=$2; shift 2 ;;
-            --interval)    cli_need_arg "$@" || return 1; OPT_INTERVAL=$2; shift 2 ;;
-            --force)       OPT_FORCE=1; shift ;;
-            --no-failsafe) OPT_NO_FAILSAFE=1; shift ;;
-            *)             macon_warn "unknown option: $1"; return 1 ;;
+            --max)           cli_need_arg "$@" || return 1; OPT_MAX=$2; shift 2 ;;
+            --on-expire)     cli_need_arg "$@" || return 1; OPT_POLICY=$2; shift 2 ;;
+            --extend-by)     cli_need_arg "$@" || return 1; OPT_EXTEND_BY=$2; shift 2 ;;
+            --busy-check)    cli_need_arg "$@" || return 1; OPT_BUSY_CHECK=$2; shift 2 ;;
+            --sentinel)      OPT_SENTINEL=1; shift ;;
+            --hook-end)      cli_need_arg "$@" || return 1; OPT_HOOK_END=$2; shift 2 ;;
+            --hook-warn)     cli_need_arg "$@" || return 1; OPT_HOOK_WARN=$2; shift 2 ;;
+            --pre-warn)      cli_need_arg "$@" || return 1; OPT_PRE_WARN=$2; shift 2 ;;
+            --interval)      cli_need_arg "$@" || return 1; OPT_INTERVAL=$2; shift 2 ;;
+            --allow-battery) OPT_ALLOW_BATTERY=1; shift ;;
+            --no-failsafe)   OPT_NO_FAILSAFE=1; shift ;;
+            *)               macon_warn "unknown option: $1"; return 1 ;;
         esac
     done
 
@@ -484,8 +484,8 @@ cli_preflight() {
         cli_heal_orphan
     fi
 
-    if [ "$(plat_power_source)" != "ac" ] && [ "$OPT_FORCE" -eq 0 ]; then
-        macon_die "not on AC power; lid closed with sleep disabled and no AC is the worst case this tool can produce (use --force to override)"
+    if [ "$(plat_power_source)" != "ac" ] && [ "$OPT_ALLOW_BATTERY" -eq 0 ]; then
+        macon_die "not on AC power; lid closed with sleep disabled and no AC is the worst case this tool can produce (use --allow-battery to override)"
     fi
 
     # Both halves, because the file existing is not the same fact as launchd
