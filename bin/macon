@@ -592,7 +592,13 @@ cli_preflight() {
     # Asked of launchd, not of the plist file: a loaded job survives its plist
     # being deleted, and a plist on disk may be one launchd never accepted.
     if ! cli_helper_daemon_loaded; then
-        macon_die "the macon helper daemon is not loaded; run install.sh again -- 'macon on' cannot start a session with nothing supervising it"
+        # Both repairs, cheapest first. `macon off` re-registers the job on its
+        # way out (cli_restore_helper_daemon), and the two ways to reach this
+        # message with the plist still on disk -- someone unloaded the job by
+        # hand, or an `off` died between its bootout and its bootstrap -- are
+        # exactly what it fixes. Naming only the installer sends a user who
+        # needs one command to fetch a tarball.
+        macon_die "the macon helper daemon is not loaded; run 'macon off' to re-register it, or install.sh again if it is really gone -- 'macon on' cannot start a session with nothing supervising it"
     fi
 
     # Snapshotted on EVERY arm, not only when no snapshot exists.

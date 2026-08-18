@@ -348,6 +348,14 @@ OPT_NO_FAILSAFE=0
 OUT=$( (cli_preflight) 2>&1 )
 assert_contains "$OUT" "helper daemon is not loaded" \
     "preflight refuses when launchd does not have the job"
+# Both repairs, and the cheap one first. `macon off` re-registers the job
+# (cli_restore_helper_daemon), which covers every way of reaching this message
+# that leaves the plist on disk -- a job unloaded by hand, or an `off` that died
+# between its bootout and its bootstrap.
+assert_contains "$OUT" "macon off" \
+    "and names the one command that puts it back"
+assert_contains "$OUT" "install.sh" \
+    "as well as the installer, for a daemon that is really gone"
 assert_fail "and nothing was applied" plat_sleep_disabled
 assert_fail "and no snapshot was taken" snap_exists
 fake_set launchd_local.macon.helper "not running"
