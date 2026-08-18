@@ -390,4 +390,25 @@ assert_eq "" "$(install_path_note /usr/local "/bin:/usr/local/bin:/usr/bin")" \
 OUT=$(install_path_note /opt/macon "/bin:/usr/bin")
 assert_contains "$OUT" "/opt/macon/bin" "a prefix off PATH is pointed out"
 
+# --- the helper daemon is part of an install --------------------------------
+#
+# A macon installed without it is a macon whose `on` refuses every time, so this
+# is not an optional extra the installer may skip on a bad day.
+
+assert_contains "$(cat "$REPO_DIR/install.sh")" "local.macon.helper" \
+    "install.sh knows the helper daemon's label"
+
+# Ordering, as a source-level claim rather than a behavioural one: registering a
+# job whose program is not on disk yet gives launchd ten seconds of crash loop
+# per attempt, and the installer has no way to notice.
+COPY_AT=$(grep -n 'libexec/macon/macon-helper' "$REPO_DIR/install.sh" | head -1 | cut -d: -f1)
+REG_AT=$(grep -n 'MACON_HELPER_PLIST' "$REPO_DIR/install.sh" | head -1 | cut -d: -f1)
+assert_ok "the helper is copied before its daemon is registered" \
+    test "$COPY_AT" -lt "$REG_AT"
+
+# bootstrap over an already-loaded label fails with EIO (verified), so an
+# upgrade must unload first or it silently keeps the old registration.
+assert_contains "$(cat "$REPO_DIR/install.sh")" "bootout" \
+    "an upgrade unloads the existing job before registering the new one"
+
 teardown_state
