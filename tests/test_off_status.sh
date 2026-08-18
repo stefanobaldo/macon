@@ -25,6 +25,12 @@ MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
 # whether this machine happens to have macon installed.
 MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
+
+# The session helper's daemon, redirected for the same reason: `off`
+# re-registers it, and a test must never name the real path when it does.
+MACON_HELPER_LABEL=local.macon.helper
+MACON_HELPER_PLIST="$MACON_STATE/local.macon.helper.plist"
+: > "$MACON_HELPER_PLIST"
 MACON_ARM_TRIES=3
 MACON_FAKE_NOW=1700000000
 export MACON_FAKE_NOW
@@ -67,38 +73,10 @@ arm() {
     fake_reset_calls
 }
 
-# `kill` is a regular builtin, so a function of the same name takes precedence.
-# Driving the stop path through it is what makes this file deterministic: a real
-# background child that has been killed stays a ZOMBIE until it is waited on,
-# and `kill -0` on a zombie still succeeds -- so the obvious "is it gone yet"
-# assertion would be a coin toss. It also keeps the suite away from `sudo kill`,
-# which inside a test run is a hang rather than a failure.
-#
-# It records what it was asked to signal, and what the machine looked like at
-# that moment: the helper has to be stopped BEFORE the restore, or a loop that
-# is still polling ends up reasoning from a descriptor that has been deleted.
-KILLED="$MACON_STATE/killed"
-KILL_SAW="$MACON_STATE/kill_saw"
-: > "$KILLED"
-# SC2032 is correct and is the point: `sudo kill` runs the real binary, not
-# this. The escalation path is deliberately not exercised here -- a suite that
-# actually asked for a password would hang rather than fail -- so what this
-# file pins is the unprivileged branch, which is the one that succeeds whenever
-# the caller owns the helper.
-# shellcheck disable=SC2032,SC2317,SC2329
-kill() {
-    if [ "$1" = "-0" ]; then
-        [ -f "$MACON_STATE/fake/proc_$2" ]
-        return
-    fi
-    printf '%s\n' "$*" >> "$KILLED"
-    fake_get sleep_disabled > "$KILL_SAW"
-    for _a in "$@"; do
-        rm -f "$MACON_STATE/fake/proc_$_a"
-    done
-    return 0
-}
-
+# `off` no longer signals anything. It boots the daemon out, and the kill stub
+# this file used to carry -- along with the zombie-reaping care that made it
+# deterministic -- went with the signal it stood in for. What replaced both is
+# the recorded call list, which is where the order now gets asserted.
 STUB_PID=4242
 start_stub_helper() {
     printf '%s\n' "$STUB_PID" > "$(sess_pid_path)"
@@ -138,15 +116,29 @@ assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
 
 # The helper must be gone BEFORE the restore: a helper still polling against a
 # descriptor that has been deleted is a loop reasoning from empty values.
+#
+# Under launchd that means booting the DAEMON out. Signalling the pid is what
+# this used to do and what KeepAlive now undoes -- verified on the real machine,
+# the helper is back within a tenth of a second -- so the signal is gone from
+# here entirely and the order is asserted further down, on the recorded calls.
+
 arm
 start_stub_helper
-: > "$KILLED"
-cli_cmd_off >/dev/null
-assert_contains "$(cat "$KILLED")" "$STUB_PID" "off signals the helper"
-assert_eq "yes" "$(cat "$KILL_SAW")" \
-    "the helper is signalled while the settings are still applied, not after"
+fake_set launchd_local.macon.helper running
+fake_reset_calls
+OUT=$(cli_cmd_off 2>&1)
+assert_contains "$(fake_calls)" "launchd_bootout local.macon.helper" \
+    "off stops the helper by booting its daemon out"
 assert_fail "off clears the pid file" test -f "$(sess_pid_path)"
 assert_fail "off leaves no live helper behind" sess_helper_alive
+
+# The stub outlives the bootout, because the fake's process table is scripted
+# and launchd is not there to reap it. That models the case worth pinning: a
+# bootout that did not take must not stop the restore.
+assert_contains "$OUT" "still running after the bootout" \
+    "a helper that survived the bootout is reported"
+assert_fail "and the machine was restored anyway" plat_sleep_disabled
+retire_stub_helper
 
 # A restore that failed has not consumed the snapshot, and deleting it there
 # destroys the only record of the original values -- while the machine is still
@@ -304,6 +296,68 @@ try_log() {
 assert_fail "log refuses an id that is not a plain identifier" \
     try_log '../../etc/passwd'
 assert_fail "log refuses an id with no samples" try_log 20260101T000000Z-00000000
+
+# --- off stops the daemon before it restores --------------------------------
+#
+# The order is the test. Restoring first would leave a live helper polling
+# against the restore, and killing the pid instead of booting the job out does
+# not stop anything: KeepAlive brings the helper straight back. Verified on the
+# real machine -- `launchctl kill TERM` kills the process and launchd respawns
+# it within a tenth of a second; only `bootout` stops it.
+
+MACON_HELPER_LABEL=local.macon.helper
+MACON_HELPER_PLIST="$MACON_STATE/local.macon.helper.plist"
+: > "$MACON_HELPER_PLIST"
+
+fake_set launchd_local.macon.helper running
+fake_set sleep_disabled yes
+fake_reset_calls
+cli_cmd_off >/dev/null 2>&1
+
+CALLS=$(fake_calls)
+assert_contains "$CALLS" "launchd_bootout local.macon.helper" \
+    "off boots the daemon out"
+
+# The ORDER, asserted by line number rather than by presence: both calls being
+# there is not the claim.
+BOOTOUT_AT=$(printf '%s\n' "$CALLS" | grep -n 'launchd_bootout' | head -1 | cut -d: -f1)
+RESTORE_AT=$(printf '%s\n' "$CALLS" | grep -n 'pmset_disablesleep 0' | head -1 | cut -d: -f1)
+assert_ok "the bootout precedes the restore" test "$BOOTOUT_AT" -lt "$RESTORE_AT"
+
+assert_contains "$CALLS" "launchd_bootstrap local.macon.helper" \
+    "and the daemon is put back for the next session"
+BOOTSTRAP_AT=$(printf '%s\n' "$CALLS" | grep -n 'launchd_bootstrap' | head -1 | cut -d: -f1)
+assert_ok "the re-registration follows the restore" \
+    test "$BOOTSTRAP_AT" -gt "$RESTORE_AT"
+
+# --- off with the daemon already gone ---------------------------------------
+#
+# A machine whose daemon someone unloaded by hand: off must still restore, and
+# it quietly re-registers on the way out.
+
+rm -f "$MACON_STATE/fake/launchd_local.macon.helper"
+fake_set sleep_disabled yes
+fake_reset_calls
+cli_cmd_off >/dev/null 2>&1
+assert_fail "off does not boot out a job that is not loaded" \
+    test "$(fake_call_count 'launchd_bootout')" -gt 0
+assert_fail "and the machine can sleep again" plat_sleep_disabled
+
+# --- off when the plist itself is gone --------------------------------------
+#
+# macon half-uninstalled. off restores, warns, and does not pretend to have
+# re-registered anything.
+
+rm -f "$MACON_HELPER_PLIST"
+fake_set sleep_disabled yes
+fake_reset_calls
+OUT=$(cli_cmd_off 2>&1)
+assert_fail "the machine can sleep again" plat_sleep_disabled
+assert_contains "$OUT" "helper daemon plist is missing" \
+    "and the missing plist is reported rather than silently skipped"
+assert_eq "0" "$(fake_call_count 'launchd_bootstrap')" \
+    "nothing was bootstrapped from a file that is not there"
+: > "$MACON_HELPER_PLIST"
 
 unset MACON_FAKE_NOW
 teardown_state
