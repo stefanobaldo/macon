@@ -8,6 +8,21 @@
 # nothing.
 set -u
 
+# launchd starts a system daemon with NO user context, and lib/snapshot.sh
+# defaults its state directory to $HOME/.local/state/macon. Under `set -u` an
+# unset HOME is not a missing fallback but a FATAL error -- and it would land at
+# the exact moment this helper needs to restore, with no log line to say why,
+# because the shell exits before reaching one.
+#
+# Verified: a launchd system daemon inherits PATH and nothing else. The old
+# `sudo nohup` launch passed HOME=/Users/<user> through, which is the only
+# reason the snapshot was ever found; the plist now names MACON_STATE outright
+# and this is the floor under it. /var/root is root's home on macOS.
+#
+# libexec/failsafe.sh carries the identical guard for the identical reason.
+: "${HOME:=/var/root}"
+export HOME
+
 MACON_LIB=${MACON_LIB:-/usr/local/libexec/macon/lib}
 
 if [ -z "${MACON_HELPER_SOURCED:-}" ]; then
@@ -590,17 +605,64 @@ helper_loop() {
     done
 }
 
+# What launchd runs. It takes no arguments and reads only the root-owned copy
+# `arm` installed, so a respawn can never be pointed at a file the user has
+# replaced in the meantime.
+#
+# Three cases, and the first is the one that looks like a gap:
+#
+#   absent   -- nothing to resume. Exit 0, which KeepAlive's SuccessfulExit
+#               false does not respawn, so the job goes quiet. This is also
+#               every boot: /var/run is cleared, so the helper launchd starts at
+#               load lands here, touches no power setting, writes no index row,
+#               and therefore cannot collide with the boot failsafe.
+#
+#               "Settings applied, no descriptor" IS an orphan, and healing it
+#               here is tempting. It must not, because at boot that state is
+#               indistinguishable from this one. The case given up on -- a
+#               descriptor deleted by hand on an armed machine -- is already
+#               covered twice: cli_heal_orphan at the next macon command, and
+#               the failsafe at the next boot.
+#
+#   valid    -- run the loop. A fresh arm and a respawn are indistinguishable on
+#               purpose: everything the loop reasons from is absolute, so
+#               resuming is simply running.
+#
+#   unusable -- restore and end. helper_finish restores FIRST, so a descriptor
+#               nothing can read still gives the machine its sleep back.
+helper_watch() {
+    _w_d=$(sess_desc_path)
+
+    [ -f "$_w_d" ] || return 0
+
+    if ! helper_validate_desc "$_w_d"; then
+        macon_warn "the session descriptor is not usable; restoring and ending"
+        helper_finish "$_w_d" invalid-descriptor
+        return 0
+    fi
+
+    printf '%s\n' "$$" > "$(sess_pid_path)"
+    helper_loop "$_w_d"
+}
+
 if [ -z "${MACON_HELPER_SOURCED:-}" ]; then
     case "${1:-}" in
-        start)
-            [ -n "${2:-}" ] || macon_die "usage: macon-helper start DESCRIPTOR"
+        # Run synchronously by the CLI under sudo, before launchd is told
+        # anything. Spec 6.1 rule 3 lives here: fixed root code validates the
+        # user-owned descriptor and takes its own copy, and the copy is the only
+        # thing `watch` ever reads. A refusal here reaches the user's terminal
+        # naming the offending field, instead of dying inside a launchd job
+        # whose stderr nobody reads.
+        arm)
+            [ -n "${2:-}" ] || macon_die "usage: macon-helper arm DESCRIPTOR"
             helper_install_descriptor "$2" || macon_die "invalid session descriptor"
             helper_reset_counters
-            printf '%s\n' "$$" > "$(sess_pid_path)"
-            helper_loop "$(sess_desc_path)"
+            ;;
+        watch)
+            helper_watch
             ;;
         *)
-            macon_die "usage: macon-helper start DESCRIPTOR"
+            macon_die "usage: macon-helper {arm DESCRIPTOR|watch}"
             ;;
     esac
 fi
