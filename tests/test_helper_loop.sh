@@ -810,4 +810,75 @@ helper_check_lid "$D"
 assert_eq "1" "$(fake_call_count 'say_as_user')" \
     "and closing it again announces once"
 
+# --- what one look costs ----------------------------------------------------
+#
+# helper_check_lid runs every MACON_LID_CADENCE -- twice a second, ~72k times
+# across a ten-hour night. Rebuilding the lid-state path inside it costs two
+# forks per look, one for the command substitution and one for sess_run_dir
+# nested inside that. Measured on this machine: 1.87 ms per call against 0.01 ms
+# for a variable, which is roughly 200k process spawns and 0.4% of a core
+# burning continuously on a machine whose entire purpose is to sit idle.
+#
+# The path is derived from the run directory, which does not move under a
+# running helper, so once per process is once too often rather than not enough.
+
+# Counted in a FILE. Every one of these calls happens inside a command
+# substitution, so a shell variable incremented here dies with the subshell and
+# reads zero however many times it ran -- an assertion that would hold just as
+# well before the fix as after it.
+_HELPER_LIDSTATE=""
+RUN_DIR_CALLS="$MACON_STATE/run-dir-calls"
+: > "$RUN_DIR_CALLS"
+# shellcheck disable=SC2317,SC2329
+sess_run_dir() {
+    printf 'x\n' >> "$RUN_DIR_CALLS"
+    printf '%s\n' "$MACON_RUN"
+}
+
+fake_set clamshell closed
+helper_check_lid "$D"
+fake_set clamshell open
+helper_check_lid "$D"
+fake_set clamshell closed
+helper_check_lid "$D"
+helper_check_lid "$D"
+assert_eq "1" "$(wc -l < "$RUN_DIR_CALLS" | tr -d ' ')" \
+    "the lid-state path is built once per process, not once per look"
+
+# shellcheck source=lib/session.sh
+. "$MACON_LIB/session.sh"
+
+# --- a run directory that cannot be written ---------------------------------
+#
+# The lid bit is the only thing standing between a shut lid and a phrase every
+# half second all night, and a write that fails silently removes it: the next
+# look finds no file and announces again. That is the exact failure the file was
+# introduced to prevent, reached through a different door. The trigger is narrow
+# -- a read-only filesystem, a full disk, a run directory removed by hand -- and
+# `macon off` does not produce it, which is what makes it the kind of case
+# nobody meets until the night it matters.
+#
+# Root can write into a directory it has no write bit on, so this proves nothing
+# when the suite is run as root and says so rather than passing quietly.
+if [ "$(id -u)" -eq 0 ]; then
+    printf '  skip: the unwritable run directory needs an unprivileged suite\n'
+else
+    fake_set clamshell open
+    helper_check_lid "$D"
+    rm -f "$(helper_lidstate_path)"
+    chmod 0500 "$(sess_run_dir)"
+
+    fake_set clamshell closed
+    fake_reset_calls
+    helper_check_lid "$D"
+    assert_eq "1" "$(fake_call_count 'say_as_user')" \
+        "a lid shut over an unwritable run directory still announces"
+    helper_check_lid "$D"
+    helper_check_lid "$D"
+    assert_eq "1" "$(fake_call_count 'say_as_user')" \
+        "and does not announce again at every look because the write failed"
+
+    chmod 0700 "$(sess_run_dir)"
+fi
+
 teardown_state
