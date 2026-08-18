@@ -451,36 +451,61 @@ cli_arm() {
         fi
     fi
 
-    # Step 2: start the helper. It must own its own root context from the
-    # start: the sudo timestamp would expire overnight and a rollback that
-    # needed a password would fail silently.
+    # Step 2: hand the descriptor to the root helper. It validates it and takes
+    # its own root-owned copy, and from then on that copy is the only thing the
+    # daemon reads -- the user cannot move the ceiling once the session starts.
+    #
+    # Synchronous and checked, unlike the `nohup ... &` this replaces: a
+    # descriptor this machine cannot use is refused here, on the user's
+    # terminal, with the offending field named.
+    #
+    # After the pmset calls rather than before, which is the less friendly
+    # order and the correct one. "A descriptor in /var/run means the machine is
+    # armed" is what sess_orphaned rests on, and installing it first would also
+    # leave a window in which a kickstart -- which any local account can issue --
+    # finds a valid descriptor and starts a watch loop over an unarmed machine.
+    #
+    # It must own its own root context from the start: the sudo timestamp would
+    # expire overnight and a rollback that needed a password would fail
+    # silently.
     #
     # The library paths are restated through `env` because sudo's env_reset
     # drops them: verified, `MACON_LIB=probe sudo -n printenv MACON_LIB` prints
     # nothing and exits 1 while the same probe on PATH returns a value, so sudo
-    # really did run. Without this the helper falls back to its /usr/local
-    # default, cannot find its libraries under a non-default MACON_PREFIX, and
-    # dies -- the session fails closed, but it fails every time.
+    # really did run. `sudo VAR=val cmd` is deliberately not used: that form
+    # needs the setenv privilege in sudoers and errors without it.
     #
-    # `sudo VAR=val cmd` is deliberately not used: that form needs the setenv
-    # privilege in sudoers and errors without it, which is a worse failure than
-    # the one being fixed.
-    #
-    # MACON_HELPER_CMD replaces the launcher wholesale, for the tests that
+    # MACON_HELPER_CMD replaces the invocation wholesale, for the tests that
     # have to watch this fail. The descriptor path is in MACON_DESC.
     MACON_DESC=$_d
     export MACON_DESC
     _cmd=${MACON_HELPER_CMD:-}
     if [ -z "$_cmd" ]; then
         _cmd="sudo /usr/bin/env MACON_LIB=\"\$MACON_LIB\" MACON_LIBEXEC=\"\$MACON_LIBEXEC\" \
-nohup \"\$MACON_LIBEXEC/macon-helper\" start \"\$MACON_DESC\" >/dev/null 2>&1 &"
+\"\$MACON_LIBEXEC/macon-helper\" arm \"\$MACON_DESC\""
     fi
     if ! eval "$_cmd"; then
-        cli_rollback "the helper failed to start"
+        cli_rollback "the session descriptor was refused"
+        cli_remove_run_files "$(sess_desc_path)"
         return 1
     fi
 
-    # Step 3: verify. "Applied without a watcher" must not exist.
+    # Step 3: tell launchd to start it. From here the daemon owns the process:
+    # if it dies, KeepAlive brings it back and it resumes from the descriptor
+    # installed above.
+    if ! plat_launchd_kickstart "$MACON_HELPER_LABEL"; then
+        cli_rollback "the helper daemon could not be started"
+        cli_remove_run_files "$(sess_desc_path)"
+        return 1
+    fi
+
+    # Step 4: verify. "Applied without a watcher" must not exist.
+    #
+    # Deleting the descriptor is what makes a failed arm self-terminating. The
+    # job is still loaded and KeepAlive is still watching, so a helper that is
+    # crash-looping will be respawned once more -- and with no descriptor to
+    # read it takes helper_watch's first case, exits 0, and is not respawned
+    # again. The loop stops itself; the CLI never has to fight launchd for it.
     _tries=0
     while [ "$_tries" -lt "$MACON_ARM_TRIES" ]; do
         if sess_helper_alive; then break; fi
@@ -490,12 +515,13 @@ nohup \"\$MACON_LIBEXEC/macon-helper\" start \"\$MACON_DESC\" >/dev/null 2>&1 &"
 
     if ! sess_helper_alive; then
         cli_rollback "no live helper appeared"
-        cli_remove_run_files "$(sess_pid_path)"
+        cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)"
         return 1
     fi
 
     if ! plat_sleep_disabled; then
         cli_rollback "disablesleep did not take effect"
+        cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)"
         return 1
     fi
 
@@ -555,6 +581,18 @@ cli_preflight() {
         if ! cli_failsafe_loaded; then
             macon_die "the boot failsafe is installed but launchd has not loaded it; run 'macon failsafe install' (or pass --no-failsafe)"
         fi
+    fi
+
+    # The session helper's daemon, with no escape hatch. --no-failsafe exists
+    # because the boot failsafe has a defensible degraded mode; this one has
+    # none -- there is no second way to start the helper, and adding a nohup
+    # fallback would be a second arming path that nothing exercises until the
+    # day it is the only one left.
+    #
+    # Asked of launchd, not of the plist file: a loaded job survives its plist
+    # being deleted, and a plist on disk may be one launchd never accepted.
+    if ! cli_helper_daemon_loaded; then
+        macon_die "the macon helper daemon is not loaded; run install.sh again -- 'macon on' cannot start a session with nothing supervising it"
     fi
 
     # Snapshotted on EVERY arm, not only when no snapshot exists.
