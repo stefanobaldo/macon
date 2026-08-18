@@ -716,33 +716,61 @@ cli_cmd_on() {
     cli_start_session || exit 1
 }
 
-# Stops the watch loop. It goes first and the restore follows, so that no live
-# helper is left fighting the restore -- but stopping it is an attempt, not a
-# guarantee: this gives up after MACON_ARM_TRIES and warns.
+# Stops the watch loop, and it is a BOOTOUT rather than a kill.
 #
-# That is why the run files are cleared AFTER the restore rather than here. A
-# helper that survived is still polling from the descriptor, and deleting it
-# out from under that helper leaves it reading every field as empty -- which is
-# exactly what `[ -ge ]` exits 2 on, a loop that evaluates none of its rungs.
-# It re-validates its descriptor at every poll now and ends itself when it
-# cannot read one, so the window is bounded either way; leaving the file in
-# place until the machine is safe costs nothing and removes the race.
+# Killing the pid stopped the old nohup'd helper. Under launchd it stops
+# nothing: verified, `launchctl kill TERM` kills the process and KeepAlive
+# respawns it within a tenth of a second, so the restore below would be racing a
+# live watcher that keeps coming back. `bootout` is the only verb that stops a
+# KeepAlive job -- verified: SIGTERM, the process is gone, the job is unloaded,
+# and nothing respawns.
+#
+# It goes first and the restore follows, so no live helper is left fighting the
+# restore -- but stopping is an attempt, not a guarantee. A bootout that fails
+# leaves a helper that re-validates its descriptor at every poll; the run files
+# are cleared AFTER the restore, so that helper reads a valid descriptor until
+# the machine is safe and then finds it gone, ends itself, and exits 0. Which is
+# why this warns rather than refusing.
 cli_stop_helper() {
-    sess_helper_alive || return 0
-    _p=$(cat "$(sess_pid_path)" 2>/dev/null)
+    plat_launchd_loaded "$MACON_HELPER_LABEL" || return 0
 
-    # Unprivileged first: the helper runs as root, but the tests do not, and a
-    # sudo prompt inside a suite is a hang rather than a failure.
-    kill "$_p" 2>/dev/null || sudo kill "$_p" 2>/dev/null || :
+    if ! plat_launchd_bootout "$MACON_HELPER_LABEL"; then
+        macon_warn "the helper daemon could not be stopped; restoring anyway"
+        return 0
+    fi
 
     _tries=0
-    while [ "$_tries" -lt "$MACON_ARM_TRIES" ] && kill -0 "$_p" 2>/dev/null; do
+    while [ "$_tries" -lt "$MACON_ARM_TRIES" ] && sess_helper_alive; do
         sleep 0.1 2>/dev/null || sleep 1
         _tries=$((_tries + 1))
     done
-    if kill -0 "$_p" 2>/dev/null; then
-        macon_warn "the helper (pid $_p) did not stop; restoring anyway"
+    if sess_helper_alive; then
+        macon_warn "the helper is still running after the bootout; restoring anyway"
     fi
+    return 0
+}
+
+# Puts the daemon back after `off` booted it out, so the next `macon on` finds a
+# job to kickstart.
+#
+# Here rather than in `on`, so each command keeps one responsibility: `on`
+# refuses when the daemon is missing, `off` puts it back. It doubles as a quiet
+# repair -- an `off` run on a machine whose daemon someone unloaded by hand
+# re-registers it.
+#
+# Nothing here can fail `off`. By the time this runs the machine has already
+# been restored, so the only thing a failure costs is the next `on`, which will
+# refuse and say why. Reporting it is the whole job.
+cli_restore_helper_daemon() {
+    if [ ! -f "$MACON_HELPER_PLIST" ]; then
+        macon_warn "the helper daemon plist is missing ($MACON_HELPER_PLIST)"
+        macon_warn "run install.sh again before the next 'macon on'"
+        return 0
+    fi
+    plat_launchd_loaded "$MACON_HELPER_LABEL" && return 0
+    plat_launchd_bootstrap "$MACON_HELPER_LABEL" "$MACON_HELPER_PLIST" ||
+        macon_warn "the helper daemon could not be re-registered; run install.sh before the next 'macon on'"
+    return 0
 }
 
 cli_cmd_off() {
@@ -776,6 +804,8 @@ cli_cmd_off() {
 
     # After the restore, for the reason cli_stop_helper explains.
     cli_remove_run_files "$_d" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+
+    cli_restore_helper_daemon
 
     cli_record_end "$_id" "$_started" manual
 }
