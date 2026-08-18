@@ -859,6 +859,41 @@ cli_cmd_status() {
         _cli_row "boot failsafe:" "NOT LOADED -- it will not run at boot"
     fi
 
+    # Two sources, with a deliberate line between them. Whether the job is
+    # loaded comes from the EXIT STATUS of `launchctl print` and nothing else:
+    # the shape of that output changes between macOS releases, and this is the
+    # fact `macon on` refuses on. The state and the run count are parsed, so
+    # they are best-effort by construction -- a reading that does not parse is
+    # simply not shown, and the row degrades to the half that is load-bearing.
+    #
+    # `runs` is launchd's own start counter and the entire respawn diagnostic:
+    # macon keeps none of its own. It is reported RAW, with no threshold, and
+    # that is a measurement rather than a preference. Across the sequence macon
+    # produces: install.sh bootstraps and the job runs once and exits 0
+    # (runs=1); `macon on` kickstarts it (runs=2); each crash adds one; `macon
+    # off` boots out and re-bootstraps, resetting it to 1. A healthy session
+    # therefore sits at TWO -- so "greater than 1 means something went wrong"
+    # would fire every night and teach the reader to ignore the one line that
+    # exists to tell them something went wrong.
+    #
+    # The baseline is stable only because `off` re-registers the job. A future
+    # change to the stop sequence would move it, which is why the number is
+    # printed rather than judged.
+    if ! cli_helper_daemon_loaded; then
+        _cli_row "helper daemon:" "NOT LOADED -- 'macon on' will refuse"
+    else
+        case "$(plat_launchd_state "$MACON_HELPER_LABEL")" in
+            running) _hd="loaded, running" ;;
+            'not running') _hd="loaded, idle" ;;
+            *) _hd="loaded" ;;
+        esac
+        _hruns=$(plat_launchd_runs "$MACON_HELPER_LABEL")
+        if cli_is_number "$_hruns"; then
+            _hd="$_hd (runs: $_hruns)"
+        fi
+        _cli_row "helper daemon:" "$_hd"
+    fi
+
     _last=$(rec_sessions 0 | head -1)
     if [ -n "$_last" ]; then
         _cli_row "last session:" \
