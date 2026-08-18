@@ -253,10 +253,12 @@ install_unsafe_dirs() {
 
 # The chown the privileged half already does covers the macon tree. It does not
 # and cannot cover the directories ABOVE it, and that is where the boundary is
-# crossed: `macon on` starts the helper with `sudo nohup`, so anything that can
-# write to a parent can swap the whole macon directory for its own and have its
-# code run as root the next time the user types their password for a perfectly
-# ordinary command. That turns a password-gated privilege into an ungated one.
+# crossed: this installer registers a permanently loaded LaunchDaemon whose
+# program is PREFIX/libexec/macon/macon-helper, so anything that can write to a
+# parent can swap the whole macon directory for its own and then have launchd
+# run that code as root on demand, with a single `launchctl kickstart` any local
+# account may issue. Not a password-gated privilege turned ungated -- an ungated
+# one from the moment the install finishes.
 #
 # Refusing costs a real install on a real Mac -- Homebrew leaves /usr/local
 # user-owned, which is the normal state of an Intel machine. Taking ownership
@@ -272,10 +274,12 @@ install_explain_unsafe_dirs() {
         printf 'macon:   %s\n' "$_d" >&2
     done
     printf 'macon:\n' >&2
-    printf 'macon: macon on starts %s/libexec/macon/macon-helper as ROOT, through\n' "$2" >&2
-    printf 'macon: sudo. Anything that can write to a directory above that helper can\n' >&2
-    printf 'macon: replace it, and have its own code run as root the next time you\n' >&2
-    printf 'macon: type your password for macon on -- with no further prompt.\n' >&2
+    printf 'macon: this installer registers a launchd job that runs\n' >&2
+    printf 'macon: %s/libexec/macon/macon-helper as ROOT, and leaves it\n' "$2" >&2
+    printf 'macon: loaded. Anything that can write to a directory above that helper\n' >&2
+    printf 'macon: can replace it, and then start its own code as root at any moment\n' >&2
+    printf 'macon: with launchctl kickstart -- no password, and nothing you have to\n' >&2
+    printf 'macon: type or run.\n' >&2
     printf 'macon: Homebrew leaves /usr/local user-owned, so on an Intel Mac this is\n' >&2
     printf 'macon: the normal state of the prefix rather than a sign of tampering.\n' >&2
     printf 'macon:\n' >&2
