@@ -305,6 +305,29 @@ cli_failsafe_loaded() {
     esac
 }
 
+# Where the session helper's LaunchDaemon is registered, and the label launchd
+# knows it by. Overridable for the same reason the failsafe's are: a test must
+# be able to ask about a job this machine does not have.
+MACON_HELPER_PLIST=${MACON_HELPER_PLIST:-/Library/LaunchDaemons/local.macon.helper.plist}
+MACON_HELPER_LABEL=${MACON_HELPER_LABEL:-local.macon.helper}
+
+# How long launchd waits between restarts of a job that keeps dying. It is
+# launchd's own default, restated in the plist rather than left implicit,
+# because it is the ENTIRE crash-loop bound this design relies on -- macon adds
+# no give-up rule of its own -- and a reader of the plist should not have to
+# know what launchd assumes.
+MACON_HELPER_THROTTLE=10
+
+# Has launchd loaded the session helper's daemon?
+#
+# Asked of launchd rather than of the filesystem, and the two are genuinely
+# different claims: verified, a loaded job survives the deletion of its plist
+# and keeps respawning, and a plist on disk may be one launchd was never told
+# about. `macon on` refuses on this answer, so it has to be the real one.
+cli_helper_daemon_loaded() {
+    plat_launchd_loaded "$MACON_HELPER_LABEL"
+}
+
 # How long the ladder waits for the helper to report itself, in tenths of a
 # second. It has to cover a sudo'd process starting; it must not be long enough
 # that a user watches an armed machine with no watcher on it.
@@ -928,6 +951,62 @@ ${_env}
 PLIST
 }
 
+# Renders the session helper's LaunchDaemon.
+#
+# Deliberately a second function rather than a shared renderer with
+# cli_failsafe_plist. The two jobs differ in exactly the keys that make them
+# different jobs -- one runs once at boot and exits, the other lives for a
+# session and must not die -- so a shared renderer would take those as
+# parameters and be a template engine for two documents. Six lines of XML
+# envelope is the cheaper duplication.
+#
+# KeepAlive is a DICT with SuccessfulExit false, and that single key is the
+# whole contract of this change:
+#
+#   - an abnormal death (crash, kill -9, OOM) respawns, and the new instance
+#     re-reads the root-owned descriptor and resumes the session;
+#   - `exit 0` does NOT respawn -- and `exit 0` is what the helper does both
+#     when a session ends and when there is no session to run.
+#
+# A bare <true/> would restart the helper for ever after every clean ending.
+# Verified in both directions on the real machine.
+#
+# No RunAtLoad: KeepAlive already starts the job when launchd loads it.
+#
+# The environment is not decoration. Verified: a launchd system daemon gets
+# PATH=/usr/bin:/bin:/usr/sbin:/sbin and NOTHING else -- no HOME, no USER, no
+# TMPDIR, no tty. MACON_STATE in particular is where the snapshot lives, and
+# lib/snapshot.sh otherwise falls back to a $HOME this job does not have; the
+# old `sudo nohup` launch passed the user's HOME through, which is the only
+# reason that fallback ever worked.
+cli_helper_plist() {
+    _prog=$(cli_xml_escape "$1")
+    _entries=$(
+        cli_plist_env_entry MACON_STATE "${2:-}"
+        cli_plist_env_entry MACON_LIB "${3:-}"
+        cli_plist_env_entry MACON_LIBEXEC "${4:-}"
+    )
+    _env=""
+    if [ -n "$_entries" ]; then
+        _env=$(printf '  <key>EnvironmentVariables</key>\n  <dict>\n%s\n  </dict>' \
+            "$_entries")
+    fi
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$MACON_HELPER_LABEL</string>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>$MACON_HELPER_THROTTLE</integer>
+  <key>ProgramArguments</key>
+  <array><string>$_prog</string><string>watch</string></array>
+${_env}
+</dict>
+</plist>
+PLIST
+}
+
 # Splits `macon run [opts] -- cmd...` at the separator and validates that the
 # shape is there at all.
 #
@@ -1081,6 +1160,14 @@ cli_cmd_run() {
 # can be asserted without a test suite that registers a boot-time root daemon.
 cli_failsafe_plist_for_install() {
     cli_failsafe_plist "$MACON_LIBEXEC/failsafe.sh" "$(cli_state_dir)" \
+        "$MACON_LIB" "$MACON_LIBEXEC"
+}
+
+# The plist this machine should have. Separate from any install verb for the
+# same reason cli_failsafe_plist_for_install is: what would be written can be
+# asserted without a test suite that registers a boot-time root daemon.
+cli_helper_plist_for_install() {
+    cli_helper_plist "$MACON_LIBEXEC/macon-helper" "$(cli_state_dir)" \
         "$MACON_LIB" "$MACON_LIBEXEC"
 }
 
