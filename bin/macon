@@ -1395,6 +1395,11 @@ if [ -z "${MACON_CLI_SOURCED:-}" ]; then
         saved) cli_cmd_saved ;;
         report) shift; cli_cmd_report "$@" ;;
         log) shift; cli_cmd_log "$@" ;;
+        # Not in `macon help`, and deliberately: it exists so install.sh can
+        # render the daemon this machine should have using the very CLI it just
+        # installed, with that CLI's own MACON_LIB and MACON_LIBEXEC baked in.
+        # A verb nobody is meant to type does not belong in the usage text.
+        __helper_plist) cli_helper_plist_for_install ;;
         version)
             printf 'macon %s\n' "$MACON_VERSION"
             printf '%s\n' "$MACON_COPYRIGHT"

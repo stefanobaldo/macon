@@ -317,6 +317,41 @@ install_files() {
     return 0
 }
 
+# Where the session helper's LaunchDaemon is registered, and the label launchd
+# knows it by. The same two values bin/macon defines, restated here because
+# install.sh does not source the CLI -- and overridable for the same reason,
+# so a test can name a job this machine does not have.
+#
+# Beside their only consumer rather than at the top of the file: the registration
+# below must come after the copy, and a definition up with MACON_PREFIX would
+# read as a knob of the install as a whole, which this is not.
+MACON_HELPER_PLIST=${MACON_HELPER_PLIST:-/Library/LaunchDaemons/local.macon.helper.plist}
+MACON_HELPER_LABEL=${MACON_HELPER_LABEL:-local.macon.helper}
+
+# The session helper's LaunchDaemon. It is what supervises a running session:
+# if the helper dies, launchd starts it again and it resumes from the
+# root-owned descriptor. Without it `macon on` refuses outright, so this is not
+# an optional extra.
+#
+# After the components are in place, deliberately. A job whose ProgramArguments
+# point at a file that is not there yet crash-loops at ThrottleInterval per
+# attempt, and the installer has no way to notice.
+install_helper_daemon() {
+    _p=$1
+
+    # An upgrade over an existing install: bootstrapping a label launchd
+    # already has fails with EIO, so unloading first is what makes this
+    # idempotent rather than a no-op that silently keeps the old registration.
+    sudo launchctl bootout "system/$MACON_HELPER_LABEL" 2>/dev/null || :
+
+    MACON_LIB="$_p/libexec/macon/lib" \
+    MACON_LIBEXEC="$_p/libexec/macon" \
+        "$_p/bin/macon" __helper_plist | sudo tee "$MACON_HELPER_PLIST" >/dev/null || return 1
+    sudo chown root:wheel "$MACON_HELPER_PLIST" || return 1
+    sudo chmod 644 "$MACON_HELPER_PLIST" || return 1
+    sudo launchctl bootstrap system "$MACON_HELPER_PLIST" || return 1
+}
+
 # `macon failsafe install` reports success even when the sudo tee inside it
 # failed, so its exit status cannot be trusted; STATUS is what `macon failsafe
 # status` printed afterwards.
@@ -447,20 +482,39 @@ install_main() {
         MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
         "$MACON_PREFIX/bin/macon" failsafe install || exit 1
 
-    # Registering the failsafe is the installer's last act and the only thing
-    # that holds the safety invariant across a reboot -- so it is checked
-    # rather than assumed. The verb above cannot report its own failure: the
-    # sudo tee inside it can fail with the pipeline still exiting 0.
+    # The failsafe is the only thing that holds the safety invariant across a
+    # reboot -- so it is checked rather than assumed. The verb above cannot
+    # report its own failure: the sudo tee inside it can fail with the pipeline
+    # still exiting 0.
     _rc=0
+    _unregistered=""
     _fs=$(MACON_LIB="$MACON_PREFIX/libexec/macon/lib" \
         MACON_LIBEXEC="$MACON_PREFIX/libexec/macon" \
         "$MACON_PREFIX/bin/macon" failsafe status 2>/dev/null) || _fs=""
     if ! install_failsafe_registered "$_fs"; then
         _rc=1
+        _unregistered="the boot failsafe"
         printf 'macon: the boot failsafe did NOT register.\n' >&2
         printf 'macon: without it, a panic or power loss leaves this Mac unable\n' >&2
         printf 'macon: to sleep until someone runs macon off by hand.\n' >&2
         printf 'macon: retry with: macon failsafe install\n' >&2
+    fi
+
+    # After the failsafe, deliberately. The failsafe is what gives this Mac its
+    # sleep back after a crash; the helper daemon only lets a session start. An
+    # install interrupted between the two leaves the invariant held and no
+    # session startable, which is the right way round.
+    printf 'registering the session helper daemon...\n'
+    install_helper_daemon "$MACON_PREFIX" || :
+    # The result, not the attempt -- the same distinction the failsafe's check
+    # makes, and for the same reason: the sudo tee inside a pipeline can fail
+    # with the pipeline still exiting 0.
+    if ! launchctl print "system/$MACON_HELPER_LABEL" >/dev/null 2>&1; then
+        _rc=1
+        _unregistered="${_unregistered:+$_unregistered and }the helper daemon"
+        printf 'macon: the helper daemon was written but launchd did not load it.\n' >&2
+        printf "macon: 'macon on' will refuse until it does. Check %s\n" \
+            "$MACON_HELPER_PLIST" >&2
     fi
 
     install_prefix_note "$MACON_PREFIX"
@@ -468,7 +522,10 @@ install_main() {
     if [ "$_rc" -eq 0 ]; then
         printf '\nmacon is installed. Try: macon status\n'
     else
-        printf '\nmacon is installed, but the boot failsafe is not registered.\n' >&2
+        # Named rather than generic: the two jobs fail for different reasons
+        # and are retried by different commands, and a reader who is told only
+        # "something did not register" has to go and find out which.
+        printf '\nmacon is installed, but %s did not register.\n' "$_unregistered" >&2
     fi
     # Not `exit`: this is the last command of the last command of the file, so
     # its status is the script's status either way, and a function that can
