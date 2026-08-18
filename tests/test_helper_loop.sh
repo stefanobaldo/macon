@@ -40,8 +40,8 @@ setup_desc() {
     sess_set "$D" user "$(id -un)"
     # Runtime state accumulates across polls on purpose; every phase below
     # starts from a clean slate so one phase's strikes cannot fund the next.
-    rm -f "$(helper_offac_path)" "$(sess_heartbeat_path)" \
-        "$(rec_samples_path "$ID")"
+    rm -f "$(helper_offac_path)" "$(helper_lidstate_path)" \
+        "$(sess_heartbeat_path)" "$(rec_samples_path "$ID")"
 }
 
 # --- the privilege boundary -------------------------------------------------
@@ -426,7 +426,7 @@ helper_check_lid "$D"
 assert_eq "0" "$(fake_call_count 'display_sleep_now')" \
     "a shut lid over a dark panel is left alone"
 
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed lit
 helper_check_lid "$D"
 assert_eq "1" "$(fake_call_count 'display_sleep_now')" \
@@ -476,7 +476,7 @@ assert_eq "0" "$(announce_count)" \
 MACON_FAKE_NOW=1700000000
 
 announce_reset
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state open lit
 helper_check_lid "$D"
 assert_eq "0" "$(announce_count)" "an open lid announces nothing"
@@ -505,13 +505,13 @@ assert_eq "1" "$(announce_count)" "reopening and closing again announces again"
 # watched -- would go silent in exactly the case where the user closed the lid
 # on a screen that had already timed out.
 announce_reset
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed dark
 helper_check_lid "$D"
 assert_eq "1" "$(announce_count)" "a lid shut over a dark panel still announces"
 
 announce_reset
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed lit
 helper_check_lid "$D"
 # "Mac on", two words. The tool's own name is not spoken because `say` reads
@@ -528,14 +528,14 @@ assert_contains "$(fake_calls)" "say_as_user $(id -un) " \
 # typed is the only thing that turns it off.
 announce_reset
 sess_set "$D" announce 0
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed lit
 helper_check_lid "$D"
 assert_eq "0" "$(announce_count)" "a session armed with --no-announce stays silent"
 
 announce_reset
 sess_set "$D" announce 1
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed lit
 helper_check_lid "$D"
 assert_eq "1" "$(announce_count)" "and one armed without it speaks"
@@ -544,7 +544,7 @@ assert_eq "1" "$(announce_count)" "and one armed without it speaks"
 # reason to fail: the announcement is cosmetic, and the session goes on.
 announce_reset
 sess_set "$D" hard_ceiling "not-a-number"
-_HELPER_LID_CLOSED=0
+rm -f "$(helper_lidstate_path)"
 watch_state closed lit
 assert_ok "an unreadable ceiling does not fail the watch" helper_check_lid "$D"
 assert_eq "0" "$(announce_count)" "and announces nothing rather than a bad duration"
@@ -603,6 +603,14 @@ assert_ok "a two second pause lasts at least a second" [ "$_elapsed" -ge 1 ]
 assert_ok "and looks at the lid more than once while it waits" [ "$_looks" -ge 2 ]
 
 MACON_LID_CADENCE=0.5
+
+# The pause test above replaced helper_check_lid with a counter stub for its
+# own purposes and never put the real one back. Nothing between here and the
+# state-survival tests near the end of this file calls it directly -- the loop
+# tests below only ever go through their own helper_wait stubs -- but those
+# tests do, so the real function has to be back in place before they run.
+# shellcheck source=libexec/macon-helper
+. "$REPO_DIR/libexec/macon-helper"
 
 # --- the loop itself --------------------------------------------------------
 #
@@ -763,5 +771,43 @@ assert_fail "and restores the machine" plat_sleep_disabled
 assert_fail "and consumes the descriptor" test -f "$D"
 assert_contains "$(rec_sessions 0)" "invalid-descriptor" \
     "and records why the session ended"
+
+# --- state that must survive a respawn --------------------------------------
+#
+# The off-AC counter must NOT be forgiven by a respawn, and the lid bit must
+# not be forgotten by one. Both are the same class of bug -- per-session state
+# living in the wrong place -- and they point in opposite directions.
+
+setup_desc
+printf '2\n' > "$(helper_offac_path)"
+: > "$(helper_lidstate_path)"
+helper_reset_counters
+assert_fail "arming clears the off-AC counter" test -f "$(helper_offac_path)"
+assert_fail "arming clears the lid bit" test -f "$(helper_lidstate_path)"
+
+# A respawn is `watch` starting again over the same run directory. If it reset
+# these, a helper crashing once per interval on battery could never accumulate
+# the strikes the no-AC abort needs, and a crash loop with the lid shut would
+# announce itself out loud every ten seconds all night.
+setup_desc
+printf '2\n' > "$(helper_offac_path)"
+fake_set clamshell closed
+: > "$(helper_lidstate_path)"
+fake_reset_calls
+helper_check_lid "$D"
+assert_eq "0" "$(fake_call_count 'say_as_user')" \
+    "a respawn with the lid already shut does not re-announce"
+assert_eq "2" "$(cat "$(helper_offac_path)")" \
+    "a respawn does not forgive accumulated off-AC strikes"
+
+# Opening the lid still clears the bit, so the NEXT close announces again.
+fake_set clamshell open
+helper_check_lid "$D"
+assert_fail "opening the lid clears the bit" test -f "$(helper_lidstate_path)"
+fake_set clamshell closed
+fake_reset_calls
+helper_check_lid "$D"
+assert_eq "1" "$(fake_call_count 'say_as_user')" \
+    "and closing it again announces once"
 
 teardown_state

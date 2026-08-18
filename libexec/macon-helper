@@ -79,6 +79,19 @@ _helper_offac_read() {
     printf '%s\n' "$_v"
 }
 
+# Whether the lid already read shut at the previous look.
+#
+# A file, not a variable, and for a different reason than the off-AC counter:
+# nothing here runs in a subshell. It is a file because launchd RESPAWNS this
+# process. In memory, the bit resets on every respawn -- and a helper in a crash
+# loop with the lid shut would say "Mac on activated, N hours remaining" every
+# ThrottleInterval seconds, all night, on a machine whose screen is already
+# dark. The run directory is cleared at boot, so this cannot outlive a session
+# either.
+helper_lidstate_path() {
+    printf '%s/lid-closed\n' "$(sess_run_dir)"
+}
+
 # An absolute path with nothing in it that can forge a descriptor line.
 # Absolute because the helper's working directory is not the user's, so a
 # relative path silently resolves somewhere else -- for the sentinel that
@@ -240,15 +253,20 @@ helper_install_descriptor() {
     return 0
 }
 
-# A new session must not inherit the previous one's strike count. The counter
-# lives in the run directory, which only a reboot clears -- so a helper that was
-# killed off AC leaves a count behind, and the next session reads it at its
-# first poll. Two strikes are then already spent before that session has seen
-# anything, and a night ends within one interval of starting. It fails toward
-# ending rather than toward staying awake, which is why it is a wart and not a
-# hazard, but a session cut short is still the wrong answer.
+# A new session must not inherit the previous one's per-session state. Both
+# files live in the run directory, which only a reboot clears -- so a helper
+# that was killed off AC leaves a count behind, and the next session reads it at
+# its first poll. Two strikes are then already spent before that session has
+# seen anything, and a night ends within one interval of starting. It fails
+# toward ending rather than toward staying awake, which is why it is a wart and
+# not a hazard, but a session cut short is still the wrong answer.
+#
+# This runs from `arm` and NOT from `watch`, which is the whole point: `arm`
+# happens once per session, `watch` happens again on every respawn. Reset in
+# `watch` and every respawn would forgive the strikes accumulated off AC, so a
+# helper dying once per interval on battery could never reach the no-AC abort.
 helper_reset_counters() {
-    rm -f "$(helper_offac_path)"
+    rm -f "$(helper_offac_path)" "$(helper_lidstate_path)"
 }
 
 # Echoes yes | no | unknown.
@@ -406,7 +424,7 @@ helper_finish() {
     fi
 
     rm -f "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
-        "$(helper_offac_path)"
+        "$(helper_offac_path)" "$(helper_lidstate_path)"
 }
 
 # When the display was last blanked. A plain variable, unlike the off-AC
@@ -414,26 +432,29 @@ helper_finish() {
 # through a command substitution -- nothing here runs in a subshell whose
 # assignments would be discarded. Should that ever change, the cost is one
 # extra blank on a display that is already going dark.
+#
+# Unlike the lid bit, this one is allowed to reset on a respawn: the cost is the
+# same one extra blank, on a display that is already going dark, not a spoken
+# announcement repeating all night.
 _HELPER_LAST_BLANK=0
-
-# Whether the lid already read shut at the previous look. The blank below is a
-# LEVEL and the announcement is an EDGE, and this one bit of memory is the whole
-# difference between them. It starts at 0 so a session armed with the lid
-# already down announces at its first look, which is the right answer: the user
-# has just typed the command and is closing the machine.
-_HELPER_LID_CLOSED=0
 
 # One look at the lid, feeding both watches, because the reading is the
 # expensive part: this runs twice a second for a whole night, and asking ioreg
 # the same question twice per cycle would double that for nothing.
+#
+# The blank is a LEVEL and the announcement is an EDGE, and the lid-state file
+# is the whole difference between them. Its ABSENCE means announce, so a session
+# armed with the lid already down announces at its first look -- the right
+# answer, because the user has just typed the command and is closing the
+# machine.
 helper_check_lid() {
     if ! plat_clamshell_closed; then
-        _HELPER_LID_CLOSED=0
+        rm -f "$(helper_lidstate_path)"
         return 0
     fi
 
-    if [ "$_HELPER_LID_CLOSED" -eq 0 ]; then
-        _HELPER_LID_CLOSED=1
+    if [ ! -f "$(helper_lidstate_path)" ]; then
+        : > "$(helper_lidstate_path)" 2>/dev/null || :
         helper_announce "$1"
     fi
 
