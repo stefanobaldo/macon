@@ -39,8 +39,26 @@ What bounds it was measured, not assumed:
   `kickstart -k`, `bootout` and `bootstrap` all require root. An unprivileged
   user cannot disturb a session in progress.
 
-So the exposure this adds is: start a root process that reads one file and
-exits.
+So on a prefix only root can write to, the exposure this adds is: start a root
+process that reads one file and exits.
+
+That bound holds because the program `launchd` starts, and the libraries it
+sources, can be replaced only by root. It is a statement about the prefix, not
+about the daemon. `install.sh` refuses to install under a prefix whose own
+directories — or any directory above them — can be written to by someone other
+than root, which is exactly the state Homebrew leaves `/usr/local` in on an
+Intel Mac, and `--allow-unsafe-prefix` exists to override that refusal. Under
+that override the bound above does not hold: whoever can write above
+`<prefix>/libexec/macon` can replace `macon-helper` or anything under its
+`lib/`, and then `launchctl kickstart` runs their code as root — with no
+password and nothing the user has to do.
+
+That capability is not entirely new. `local.macon.failsafe` has pointed into
+the same prefix since 0.1.0 and runs as root at every boot, so an unsafe prefix
+already handed root to whoever could write there. What the helper daemon
+changes is *when* root arrives: at the next boot before, on demand now. Install
+under a prefix only root owns, and the refusal that is the default will keep
+you there.
 
 ## Design rules
 
