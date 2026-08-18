@@ -204,4 +204,147 @@ assert_ok "and it is still there" test -d "$MACON_STATE"
 assert_fail "no pid file, no session blocker" uninstall_helper_alive
 assert_fail "no snapshot, no snapshot blocker" uninstall_snapshot_present
 
+# --- the helper daemon has to be booted out, not deleted --------------------
+#
+# Verified on the real machine: a loaded job is independent of its plist file.
+# Delete the file and the job stays loaded and keeps respawning -- so an
+# uninstall that only removes the file leaves a root job alive on a machine its
+# owner believes is clean, and the `rm` looks like it worked.
+
+U=$(cat "$REPO_DIR/uninstall.sh")
+
+assert_contains "$U" "local.macon.helper" \
+    "uninstall.sh knows the helper daemon's label"
+# Single-quoted on purpose, here and in the grep below: this is source text
+# being searched for, and the quote between `bootout ` and `system/` is part of
+# it -- dropping it from uninstall.sh instead would trip SC2086.
+# shellcheck disable=SC2016
+assert_contains "$U" 'bootout "system/$MACON_HELPER_LABEL"' \
+    "and boots the job out rather than only deleting its plist"
+
+# Order: booting out after deleting the plist would still work, but the removal
+# has to happen at all, and it has to precede removing the helper binary the
+# job points at -- a respawn between the two would run a program that is gone.
+# shellcheck disable=SC2016
+BOOTOUT_AT=$(printf '%s\n' "$U" | grep -nF 'bootout "system/$MACON_HELPER_LABEL"' | head -1 | cut -d: -f1)
+RM_AT=$(printf '%s\n' "$U" | grep -n 'rm -rf.*libexec/macon' | head -1 | cut -d: -f1)
+assert_ok "the daemon is stopped before its program is removed" \
+    test "$BOOTOUT_AT" -lt "$RM_AT"
+
+# --- the label and plist path uninstall.sh restates -------------------------
+#
+# uninstall.sh defines its own constants rather than sourcing bin/macon, so it
+# keeps working with the installed tree half-removed -- the state someone
+# reaches for the uninstaller to clean up. The price is drift, and drift here is
+# silent: a rename in the CLI would leave the uninstaller booting out a label
+# launchd does not have, and rc 3 for "no such process" is indistinguishable
+# from a job that was never loaded.
+
+helper_default() {
+    sed -n "s/^$2=\${$2:-\(.*\)}$/\1/p" "$1" | head -1
+}
+# Read before compared: two defaults that both failed to parse would be equal.
+CLI_LABEL=$(helper_default "$REPO_DIR/bin/macon" MACON_HELPER_LABEL)
+CLI_PLIST=$(helper_default "$REPO_DIR/bin/macon" MACON_HELPER_PLIST)
+assert_eq "local.macon.helper" "$CLI_LABEL" "the CLI's default label parses"
+assert_contains "$CLI_PLIST" "/Library/LaunchDaemons/" \
+    "and so does its default plist path"
+assert_eq "$CLI_LABEL" "$(helper_default "$REPO_DIR/uninstall.sh" MACON_HELPER_LABEL)" \
+    "uninstall.sh boots out the label the CLI registers"
+assert_eq "$CLI_PLIST" "$(helper_default "$REPO_DIR/uninstall.sh" MACON_HELPER_PLIST)" \
+    "and deletes the plist the CLI expects"
+
+# --- what the uninstall actually runs, and in what order --------------------
+#
+# Everything above is a claim about source text, and source text is a weak
+# proxy: `local.macon.helper` would satisfy the first assertion from inside a
+# comment, and the line numbers measure where lines sit rather than what runs.
+# So the removal is run for real behind a PATH shim and the order is read back
+# off the recording.
+#
+# Nothing real is touched. Every step that changes this machine goes through
+# sudo, and sudo here is a stub that records its arguments and returns 0 without
+# executing them -- so no launchctl, rm or pmset reaches the Mac. The stubs
+# SUCCEED, unlike the refusing ones in tests/test_source_inert.sh: a stub that
+# refused would stop uninstall_main at its first privileged call, long before
+# the ordering that is the point of this section.
+
+UW="$MACON_STATE/uninstall-run"
+USHIM="$UW/shim"
+UCALLS="$UW/calls"
+mkdir -p "$USHIM" "$UW/prefix"
+: > "$UCALLS"
+for _c in sudo rm pmset cp chown chmod ln mv; do
+    printf '#!/bin/sh\nprintf "%%s %%s\\n" "%s" "$*" >> "%s"\nexit 0\n' \
+        "$_c" "$UCALLS" > "$USHIM/$_c"
+    chmod 755 "$USHIM/$_c"
+done
+
+# launchctl is recorded like the rest, but `print` answers 3 -- launchd's reply
+# for a label it does not have, which is what a bootout that worked leaves
+# behind. That selects the branch which has to stay silent.
+# shellcheck disable=SC2016  # "$*" and "$1" are written into the stub, not expanded here
+printf '#!/bin/sh\nprintf "launchctl %%s\\n" "$*" >> "%s"\ncase "${1:-}" in print) exit 3 ;; esac\nexit 0\n' \
+    "$UCALLS" > "$USHIM/launchctl"
+chmod 755 "$USHIM/launchctl"
+
+# uninstall.sh reads the IORegistry directly and by design. A machine that
+# reports nothing is not a blocker (asserted above), which is what lets
+# uninstall_main reach its removals on a Mac that genuinely has sleep disabled.
+printf '#!/bin/sh\nexit 0\n' > "$USHIM/ioreg"
+chmod 755 "$USHIM/ioreg"
+
+# The subshell is deliberate, here and below: the shimmed PATH must not outlive
+# the call, or the rest of this file -- and teardown_state -- would run against
+# fakes.
+# shellcheck disable=SC2030,SC2031
+run_shimmed() ( PATH="$USHIM:$PATH"; export PATH; "$@" )
+
+# shellcheck disable=SC2030,SC2031
+run_uninstall_main() (
+    PATH="$USHIM:$PATH"
+    export PATH
+    MACON_PREFIX="$UW/prefix"
+    MACON_FS_PLIST="$UW/local.macon.failsafe.plist"
+    MACON_HELPER_PLIST="$UW/local.macon.helper.plist"
+    MACON_HELPER_LABEL=local.macon.test
+    uninstall_main > "$UW/out" 2>&1
+)
+
+# The recorder is proved to record before it is read: a shim directory that was
+# never reached would otherwise make every grep below fail, or pass, for a
+# reason that has nothing to do with the uninstaller.
+assert_ok "the shim accepts a privileged command" run_shimmed sudo -n true
+assert_contains "$(cat "$UCALLS")" "sudo -n true" "and records it"
+: > "$UCALLS"
+
+assert_ok "the uninstall runs to the end behind the shim" run_uninstall_main
+assert_contains "$(cat "$UW/out")" "macon is uninstalled" \
+    "and reaches the line that says so"
+
+CALLED=$(cat "$UCALLS")
+assert_contains "$CALLED" "bootout system/local.macon.test" \
+    "it boots the helper daemon out by label"
+assert_contains "$CALLED" "rm -f $UW/local.macon.helper.plist" \
+    "and deletes the plist as well -- tidying up after the bootout, not instead"
+
+# The order is the assertion, not the presence. A bootout that ran after the
+# components were removed would leave a window in which launchd respawns a
+# program that is no longer on disk; one that ran after the plist was deleted
+# would still work, but only because bootout does not read the file.
+BOOTOUT_RUN=$(printf '%s\n' "$CALLED" | grep -n 'bootout system/local.macon.test' | head -1 | cut -d: -f1)
+PLIST_RM_RUN=$(printf '%s\n' "$CALLED" | grep -nF "rm -f $UW/local.macon.helper.plist" | head -1 | cut -d: -f1)
+COMP_RM_RUN=$(printf '%s\n' "$CALLED" | grep -n 'rm -rf .*libexec/macon' | head -1 | cut -d: -f1)
+assert_ok "the daemon is stopped before the program it runs is removed" \
+    test "$BOOTOUT_RUN" -lt "$COMP_RM_RUN"
+assert_ok "and before its plist goes" \
+    test "$BOOTOUT_RUN" -lt "$PLIST_RM_RUN"
+
+# launchd was asked whether the job really went, and said no such label. The
+# by-hand instructions are for the case where it is still there.
+assert_contains "$CALLED" "launchctl print system/local.macon.test" \
+    "the uninstall checks the bootout actually took"
+assert_fail "and stays quiet when launchd no longer has the job" \
+    grep -q "still loaded" "$UW/out"
+
 teardown_state

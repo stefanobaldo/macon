@@ -18,6 +18,8 @@ set -u
 
 MACON_PREFIX=${MACON_PREFIX:-/usr/local}
 MACON_FS_PLIST=${MACON_FS_PLIST:-/Library/LaunchDaemons/local.macon.failsafe.plist}
+MACON_HELPER_PLIST=${MACON_HELPER_PLIST:-/Library/LaunchDaemons/local.macon.helper.plist}
+MACON_HELPER_LABEL=${MACON_HELPER_LABEL:-local.macon.helper}
 
 # The same defaults the library modules use, restated rather than sourced: this
 # script has to keep working when the installed tree is half-removed, or gone.
@@ -237,6 +239,30 @@ uninstall_main() {
     if uninstall_failsafe_present; then
         uninstall_explain_stuck_failsafe
         exit 1
+    fi
+
+    # The session helper's daemon. Booting it out IS the removal; deleting the
+    # plist is only tidying up after it.
+    #
+    # Verified: a loaded job is INDEPENDENT of its plist file. Remove the file
+    # and launchd keeps the job loaded and keeps respawning it -- so an
+    # uninstall that only deletes the plist leaves a root job alive on a machine
+    # whose owner believes macon is gone, and the `rm` gives no sign of it.
+    #
+    # Here, and not earlier: before the components are removed, because a
+    # respawn landing between the two would start a program that is no longer on
+    # disk; and after the abort above, which promises nothing else was removed.
+    #
+    # `bootout` of a job launchd does not have exits 3 (No such process), which
+    # is the ordinary case on a machine where no session ever ran -- not a
+    # condition to report. The check below is what catches a bootout that failed
+    # for a reason that matters.
+    printf 'stopping the helper daemon...\n'
+    sudo launchctl bootout "system/$MACON_HELPER_LABEL" 2>/dev/null || :
+    sudo rm -f "$MACON_HELPER_PLIST"
+    if launchctl print "system/$MACON_HELPER_LABEL" >/dev/null 2>&1; then
+        printf 'macon: the helper daemon is still loaded; finish by hand:\n' >&2
+        printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
     fi
 
     printf 'removing %s/bin/macon and %s/libexec/macon...\n' \
