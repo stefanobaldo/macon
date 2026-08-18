@@ -99,18 +99,49 @@ says() { tr '\n' ' ' < "$1" | tr -s ' ' | grep -qF "$2"; }
 assert_ok "the README says the daemon is registered at install time" \
     says "$README" "that \`install.sh\` registers"
 assert_ok "and that a session cannot start without it" \
-    says "$README" \
-    "macon refuses to start a session unless \`launchd\` has that job loaded"
-# The claim above is proven as behaviour in tests/test_on_rollback.sh, which
-# runs cli_preflight against a machine launchd has no job on. What is checked
-# here is that the CLI still contains the refusal the README describes...
-assert_ok "and the CLI still refuses in those words" \
-    grep -qF 'macon_die "the macon helper daemon is not loaded' "$REPO_DIR/bin/macon"
-# ...and that the escape hatch the README promises does not exist stayed absent.
-# --no-failsafe is the precedent that makes this worth pinning: the moment a
-# --no-helper is added, the README sentence is false and nothing else notices.
-assert_fail "and no flag was added that overrides it" \
-    grep -qE '\-\-no-(helper|daemon|supervision)' "$REPO_DIR/bin/macon"
+    says "$README" "Without that job, \`macon on\` refuses outright"
+
+# "Outright" is the word under test. That the CLI refuses AT ALL is proven as
+# behaviour in tests/test_on_rollback.sh, which runs cli_preflight against a
+# machine launchd has no job on; what is pinned here is that the refusal has not
+# since grown a way past it, which no other test on this branch would notice.
+#
+# Named flags were the wrong tool for that: a pattern listing --no-helper and
+# two guesses beside it walks straight past --skip-helper, --unsupervised or a
+# --force, and reads as coverage while providing none. So the GATE ITSELF is
+# extracted and required to be unconditional. Every escape hatch has to reach it
+# somehow, and there are only two ways in -- a test beside the call, or a parsed
+# option consulted inside it -- and both are visible here whatever the flag ends
+# up being called.
+#
+# The extraction is anchored on the exact `if ! cli_helper_daemon_loaded; then`
+# line, and `macon status` has one of those too, further down. Requiring
+# macon_die in what comes back is what tells the two apart: an anchor that stops
+# matching -- because a condition was added beside the call -- silently lands on
+# the status row instead, and the assertion fails there rather than passing on
+# the wrong block.
+gate_block() {
+    awk '/^    if ! cli_helper_daemon_loaded; then$/ { f = 1 }
+         f { print }
+         f && /^    fi$/ { exit }' "$1"
+}
+GATE=$(gate_block "$REPO_DIR/bin/macon")
+assert_contains "$GATE" "macon_die" \
+    "and the CLI still refuses when launchd does not have the daemon"
+mentions_option() { printf '%s' "$1" | grep -q 'OPT_'; }
+assert_fail "with nothing that lets an option past it" mentions_option "$GATE"
+
+# The other way in: leave the gate alone and teach the predicate to lie. It is
+# two lines and asks launchd directly, which is the whole reason `on` can trust
+# it -- an option consulted here would be an escape hatch the block above cannot
+# see.
+LOADED_FN=$(awk '/^cli_helper_daemon_loaded\(\) \{$/ { f = 1 }
+                 f { print }
+                 f && /^\}$/ { exit }' "$REPO_DIR/bin/macon")
+assert_contains "$LOADED_FN" "plat_launchd_loaded" \
+    "and it asks launchd, not a file or a flag"
+assert_fail "and that answer is not overridable either" \
+    mentions_option "$LOADED_FN"
 
 assert_ok "SECURITY.md states the unprivileged kickstart plainly" \
     says "$SECURITY" \
@@ -128,4 +159,4 @@ assert_ok "the changelog names a version" grep -qE '^## \[?0\.1\.0' "$CHANGELOG"
 assert_ok "the changelog names the helper daemon" \
     grep -qF "$HELPER_LABEL" "$CHANGELOG"
 assert_ok "and says what that bought the user" \
-    says "$CHANGELOG" "A session no longer ends when its helper does"
+    says "$CHANGELOG" "Killing the session helper no longer strands the Mac awake"

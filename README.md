@@ -34,9 +34,9 @@ configuration is actually tested, not when it is expected to work.
 
 The installer verifies your macOS version and required tools, installs the CLI and
 the root helper, and registers two LaunchDaemons: the boot failsafe and the daemon
-that supervises the session helper. Run it as yourself, not with
-`sudo` — it asks for a password when it needs one, and installing as root would
-register the failsafe against root's state directory instead of yours.
+that supervises the session helper. Run it as yourself, not with `sudo` — it asks
+for a password when it needs one, and installing as root would register the
+failsafe against root's state directory instead of yours.
 
 ## Use
 
@@ -87,14 +87,11 @@ cosmetic.
 - A **boot failsafe** restores power at startup, because `disablesleep` survives
   reboots. macon refuses to start a session unless `launchd` has actually loaded
   it — a plist sitting on disk is not the same thing as a job that will run.
-- The **session helper is supervised by `launchd`**, as a daemon named
-  `local.macon.helper` that `install.sh` registers. Kill the helper mid-session and
-  `launchd` starts it again; it picks the session back up from its own root-owned
-  copy and carries on to the same deadline. Without that, a helper that died left
-  the Mac awake until you next ran a macon command — now it restores by itself.
-  macon refuses to start a session unless `launchd` has that job loaded, and there
-  is no flag to override it. `macon status` reports it, and `sh install.sh` puts it
-  back.
+- The **session helper is supervised by `launchd`**, through a daemon
+  (`local.macon.helper`) that `install.sh` registers. Kill the helper mid-session
+  and `launchd` starts it again: the session resumes, and the Mac restores itself
+  at the deadline instead of staying awake until you next run a macon command.
+  Without that job, `macon on` refuses outright.
 - Your original values are snapshotted before anything changes. macOS exposes no
   readable source of power defaults, so that snapshot is the only copy that exists —
   macon refuses to overwrite it with an already-modified state.
@@ -177,10 +174,10 @@ touches it.
 It refuses while a session is live or a snapshot is unrestored, rather than removing
 the only thing that knows how to put your settings back.
 
-It also stops the helper daemon before it deletes anything, and stops the uninstall
-if `launchd` still has the job afterwards — removing the files underneath a loaded
-`KeepAlive` job would leave a root daemon respawning a program that is gone, with no
-macon left to take it out. It tells you the two commands to run by hand.
+It boots the helper daemon out before it removes the CLI and the root helper, and
+stops there if `launchd` still has the job — deleting those files underneath a
+loaded `KeepAlive` job would leave a root daemon respawning a program that is gone,
+with no macon left to take it out. It names the two commands to run by hand.
 
 ## License
 

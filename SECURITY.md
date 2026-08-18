@@ -27,8 +27,9 @@ the threat model and it is stated here rather than softened.
 
 What bounds it was measured, not assumed:
 
-- The process `launchd` starts takes no arguments and reads nothing supplied
-  from outside: `macon-helper watch` works from its own root-owned copy of the
+- The process `launchd` starts takes no argument an attacker can choose and
+  reads nothing supplied from outside: `ProgramArguments` in the plist is fixed
+  at `macon-helper watch`, and `watch` works from its own root-owned copy of the
   session descriptor, at `/var/run/macon/session.conf`. With no descriptor there
   it exits 0 having applied nothing. That file is written by root, owned by
   root, mode 0644, inside a root-owned directory an unprivileged user cannot
