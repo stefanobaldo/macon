@@ -172,20 +172,34 @@ uninstall_helper_loaded() {
 # mistake respawns a root process every ten seconds, indefinitely, on a machine
 # whose owner believes macon is gone.
 #
-# So this aborts rather than warning and carrying on. It fails CLOSED: the boot
-# failsafe is already removed by this point, and `macon on` refuses without it,
-# so no new session can start -- and the three blockers checked at the top of
-# uninstall_main already established that this Mac can sleep right now. What is
-# left is a loaded job and the tools to take it out, which is recoverable; the
-# other branch is a root crash-loop nobody asked for and nothing reports.
+# So this aborts rather than warning and carrying on. Nothing is removed on this
+# path, which keeps every way back the user still had: the CLI and its libraries
+# are untouched, and the plist the instructions below name is still on disk.
+#
+# What the message does NOT do is tell the user anything about whether this Mac
+# can sleep. It cannot know. `--force` reaches here with a `sleep-disabled`
+# blocker deliberately overridden, having already warned that same user the Mac
+# may be unable to sleep and to run `pmset -a disablesleep 0` -- a reassurance
+# printed here would contradict the warning uninstall_main just gave. That is
+# also why uninstall_explain_stuck_failsafe above makes no sleep claim: it says
+# what is stuck, what was and was not removed, and what to run. Same discipline.
 uninstall_explain_stuck_helper() {
     printf 'macon: the helper daemon is still loaded:\n' >&2
     printf 'macon:   %s\n' "$MACON_HELPER_LABEL" >&2
-    printf 'macon: the boot failsafe was removed; nothing else was. Deleting the\n' >&2
+    # An upper bound, not a claim that a failsafe ever existed: a Mac that never
+    # had one reaches here having had nothing removed at all.
+    printf 'macon: nothing was removed but the boot failsafe. Deleting the\n' >&2
     printf 'macon: components now would leave a KeepAlive root job respawning a\n' >&2
-    printf 'macon: program that is gone, every few seconds, for ever.\n' >&2
-    printf 'macon: this Mac can still sleep, and macon refuses to start a session\n' >&2
-    printf 'macon: without the boot failsafe, so nothing new can hold it awake.\n' >&2
+    printf 'macon: program that is gone, every few seconds, for ever, with no\n' >&2
+    printf 'macon: macon left to take it out.\n' >&2
+    # Actionable rather than reassuring, and printed only when it is true: the
+    # component removal has not run yet, so whatever CLI was installed is still
+    # installed, and `macon off` is the one command that ends a live session.
+    if [ -x "$MACON_PREFIX/bin/macon" ]; then
+        printf 'macon: %s/bin/macon is still installed: if this Mac is holding a\n' \
+            "$MACON_PREFIX" >&2
+        printf "macon: session, run 'macon off' before trying again.\n" >&2
+    fi
     printf 'macon: stop the job by hand, then run this again:\n' >&2
     printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
     printf 'macon:   sudo rm -f %s\n' "$MACON_HELPER_PLIST" >&2
