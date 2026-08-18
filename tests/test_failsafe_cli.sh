@@ -297,4 +297,52 @@ assert_ok "the attempt did reach rm" \
 rm -f "$MACON_FS_PLIST"
 clear_blockers
 
+# --- the helper daemon's plist ----------------------------------------------
+#
+# Three keys carry the whole design, and each of them has a way of being subtly
+# wrong that produces a job which looks fine and is not.
+
+P=$(cli_helper_plist /usr/local/libexec/macon/macon-helper \
+    /Users/someone/.local/state/macon /usr/local/libexec/macon/lib \
+    /usr/local/libexec/macon)
+
+assert_contains "$P" "<key>Label</key><string>local.macon.helper</string>" \
+    "the plist declares the helper's own label"
+assert_contains "$P" "<string>watch</string>" \
+    "the daemon runs the watch verb, never a descriptor path"
+
+# A bare <true/> here would restart the helper for ever after every clean
+# ending, because ending a session IS an exit 0. The dict is the contract.
+assert_contains "$P" "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>" \
+    "KeepAlive respawns an abnormal death and not a clean exit"
+case "$P" in
+    *"<key>KeepAlive</key><true/>"*)
+        assert_eq "dict" "true" "KeepAlive must not be a bare true" ;;
+    *) assert_eq "dict" "dict" "KeepAlive is not a bare true" ;;
+esac
+
+assert_contains "$P" "<key>ThrottleInterval</key><integer>10</integer>" \
+    "a crash loop is rate-bounded by launchd itself"
+
+# A system daemon inherits nothing. MACON_STATE is where the snapshot lives,
+# and without it lib/snapshot.sh falls back to a $HOME this job does not have.
+assert_contains "$P" "<key>MACON_STATE</key><string>/Users/someone/.local/state/macon</string>" \
+    "the state directory is named, because the daemon has no HOME to derive it from"
+assert_contains "$P" "<key>MACON_LIB</key><string>/usr/local/libexec/macon/lib</string>" \
+    "the library path is named"
+assert_contains "$P" "<key>MACON_LIBEXEC</key><string>/usr/local/libexec/macon</string>" \
+    "the libexec path is named"
+
+# RunAtLoad would be redundant -- KeepAlive already starts the job at load --
+# and a reader who saw both would reasonably wonder which one was doing the work.
+case "$P" in
+    *RunAtLoad*) assert_eq "absent" "present" "RunAtLoad is not restated" ;;
+    *) assert_eq "absent" "absent" "RunAtLoad is not restated" ;;
+esac
+
+# A path is XML text, not markup. launchd's answer to a plist it cannot parse
+# is to not run the job -- discovered on the morning it was needed.
+P=$(cli_helper_plist "/opt/a & b/macon-helper" "" "" "")
+assert_contains "$P" "/opt/a &amp; b/macon-helper" "the program path is XML-escaped"
+
 teardown_state
