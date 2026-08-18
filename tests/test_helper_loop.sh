@@ -772,6 +772,37 @@ assert_fail "and consumes the descriptor" test -f "$D"
 assert_contains "$(rec_sessions 0)" "invalid-descriptor" \
     "and records why the session ended"
 
+# The third case: a descriptor that IS usable, which is the branch every real
+# session takes and the only one that writes the pid file.
+#
+# That file is the single fact `cli_arm`'s liveness ladder and sess_helper_alive
+# both rest on, and every cli_arm test replaces the helper with a stub that
+# writes it itself -- so with this case uncovered the line could be deleted and
+# `macon on` would fail on every real machine while the suite stayed green.
+#
+# helper_loop is stubbed because the real one polls until a deadline; nothing
+# below this point calls it.
+setup_desc
+rm -f "$(sess_pid_path)"
+_looped=0
+_loop_desc=""
+# shellcheck disable=SC2317,SC2329
+helper_loop() {
+    _looped=$((_looped + 1))
+    _loop_desc=$1
+    return 0
+}
+assert_ok "watch with a usable descriptor exits 0" helper_watch
+assert_eq "1" "$_looped" "and runs the watch loop"
+assert_eq "$D" "$_loop_desc" "over the descriptor it just validated"
+assert_ok "and writes the pid file first" test -f "$(sess_pid_path)"
+# The value, not merely the file: sess_helper_alive reads the number out of it
+# and matches the process behind it, so a pid file holding anything else is a
+# session the CLI declares dead one tenth of a second after arming it.
+assert_eq "$$" "$(cat "$(sess_pid_path)")" \
+    "holding this process's own pid, which is what sess_helper_alive matches on"
+unset -f helper_loop
+
 # --- state that must survive a respawn --------------------------------------
 #
 # The off-AC counter must NOT be forgiven by a respawn, and the lid bit must
