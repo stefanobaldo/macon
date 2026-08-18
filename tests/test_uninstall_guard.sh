@@ -456,6 +456,16 @@ assert_contains "$MSG" "$UW/prefix/bin/macon is still installed" \
     "it points at the CLI the abort left in place"
 assert_contains "$MSG" "macon off" \
     "and at the command that ends a session, which is the useful thing to say"
+# By full path, with the library variables set. A bare `macon off` resolves to
+# nothing under a non-default prefix, and by path alone the CLI would look for
+# its libraries under /usr/local -- an instruction that fails at the moment it
+# is needed is worse than no instruction.
+assert_contains "$MSG" "$UW/prefix/bin/macon off" \
+    "as an invocation that does not depend on PATH"
+assert_contains "$MSG" "MACON_LIB=$UW/prefix/libexec/macon/lib" \
+    "carrying the library path the CLI would otherwise default to /usr/local"
+assert_contains "$MSG" "MACON_LIBEXEC=$UW/prefix/libexec/macon " \
+    "and the libexec path beside it"
 
 # The conditional half: no CLI, no instruction to run one. `macon on
 # --no-failsafe` exists, so the abort cannot claim a session is impossible
