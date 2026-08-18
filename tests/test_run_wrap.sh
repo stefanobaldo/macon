@@ -72,6 +72,11 @@ MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
 MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
 
+# The helper daemon, scripted as loaded: `macon run` goes through the same
+# preflight as `macon on`, which now refuses when launchd does not have the job.
+MACON_HELPER_LABEL=local.macon.helper
+fake_set launchd_local.macon.helper "not running"
+
 TMPDIR="$MACON_STATE/tmp"
 mkdir -p "$TMPDIR"
 export TMPDIR
@@ -79,17 +84,17 @@ export TMPDIR
 MACON_FAKE_NOW=1700000000
 export MACON_FAKE_NOW
 
-# The same stand-in for `macon-helper start DESCRIPTOR` the rollback tests use:
+# The same stand-in for `macon-helper arm DESCRIPTOR` the rollback tests use:
 # it installs its own copy of the descriptor and declares a live process the
-# real sess_helper_alive can match by name.
+# real sess_helper_alive can match by name. Synchronous, like `arm` itself.
 STUB="$MACON_STATE/stub-helper.sh"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/sh
-cp "$1" "$MACON_RUN/session.conf"
+cp "$1" "$MACON_RUN/session.conf" || exit 1
 sleep 30 &
 _pid=$!
 printf '%s\n' "$_pid" > "$MACON_RUN/helper.pid"
-printf 'macon-helper start %s\n' "$1" > "$MACON_STATE/fake/proc_$_pid"
+printf 'macon-helper watch\n' > "$MACON_STATE/fake/proc_$_pid"
 STUBEOF
 
 # Reports every argument it was handed, one per line, and its own pid. Both are
@@ -131,7 +136,7 @@ mkdir -p "$(sess_run_dir)"
 # `run` has no positional duration, so the ceiling is the only bound it can
 # have -- and a session with no bound is the one thing that must not start.
 clean_machine
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 ( cli_cmd_run -- true ) 2>/dev/null
 assert_fail "run refuses to start without --max" test "$?" -eq 0
 assert_eq "0" "$(fake_call_count 'pmset')" "the missing ceiling touched nothing"
@@ -242,7 +247,7 @@ assert_fail "and the machine was left able to sleep" plat_sleep_disabled
 # the user typed is how a session ends at a time nobody asked for.
 
 clean_machine
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 _warn=$( ( cli_cmd_run --max 12 --busy-check 'true' -- true ) 2>&1 >/dev/null )
 assert_contains "$_warn" "--busy-check" "the discarded flag is named"
 assert_eq "process" "$(sess_get "$(sess_desc_path)" completion)" \

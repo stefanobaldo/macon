@@ -32,6 +32,12 @@ MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
 MACON_FS_LOADED=yes
 : > "$MACON_FS_PLIST"
 
+# The helper daemon, scripted as loaded. Without it every cli_arm below would
+# refuse before touching anything, which is a correct refusal and the wrong
+# test.
+MACON_HELPER_LABEL=local.macon.helper
+fake_set launchd_local.macon.helper "not running"
+
 # The hand-over descriptor is built under TMPDIR; pointing that at the test's
 # own directory keeps the assertion about cleaning it up from ever looking at
 # another process's files.
@@ -42,18 +48,24 @@ export TMPDIR
 MACON_FAKE_NOW=1700000000
 export MACON_FAKE_NOW
 
-# A stand-in for `macon-helper start DESCRIPTOR`: it installs its own copy of
-# the descriptor exactly as the real one does, records a PID, and declares that
-# PID in the fake's process table so the real sess_helper_alive -- name match
-# included -- is what decides whether arming succeeded.
+# A stand-in for `macon-helper arm DESCRIPTOR` followed by the daemon that
+# launchd kickstarts. It installs its own copy of the descriptor exactly as the
+# real `arm` does, records a PID, and declares that PID in the fake's process
+# table so the real sess_helper_alive -- name match included -- is what decides
+# whether arming succeeded.
+#
+# It does NOT background itself. That is the shape change: the old launcher was
+# `nohup ... &` and its failure could only ever be "the fork failed", while
+# `arm` runs to completion and its exit status is a real answer about the
+# descriptor.
 STUB="$MACON_STATE/stub-helper.sh"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/sh
-cp "$1" "$MACON_RUN/session.conf"
+cp "$1" "$MACON_RUN/session.conf" || exit 1
 sleep 30 &
 _pid=$!
 printf '%s\n' "$_pid" > "$MACON_RUN/helper.pid"
-printf 'macon-helper start %s\n' "$1" > "$MACON_STATE/fake/proc_$_pid"
+printf 'macon-helper watch\n' > "$MACON_STATE/fake/proc_$_pid"
 STUBEOF
 
 clean_machine() {
@@ -131,7 +143,7 @@ assert_eq "1" "$(plat_pmset_read sleep)" "the timers came back too"
 
 clean_machine
 fake_set fail_pmset_apply_ac 1
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 assert_fail "arming fails when the timers cannot be zeroed" cli_arm "$D"
 assert_fail "a refused pmset still leaves the machine able to sleep" plat_sleep_disabled
 assert_fail "the helper was never started" test -f "$(sess_pid_path)"
@@ -147,7 +159,7 @@ assert_eq "0" "$(fake_call_count 'pmset_apply_ac')" \
 # --- the happy path ---------------------------------------------------------
 
 clean_machine
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 assert_ok "arming succeeds when the helper comes up" cli_arm "$D"
 assert_ok "disablesleep is applied" plat_sleep_disabled
 assert_eq "0" "$(plat_pmset_read sleep)" "sleep is zeroed while armed"
@@ -159,7 +171,7 @@ kill_stub
 # not know, and one rejected key fails the whole invocation.
 clean_machine
 rm -f "$MACON_STATE/fake/powernap"
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 assert_ok "arming succeeds on a machine with no powernap" cli_arm "$D"
 assert_contains "$(fake_calls)" "pmset_apply_ac sleep 0 disksleep 0" \
     "the applied key set matches the machine"
@@ -257,7 +269,7 @@ rm -f "$(sess_pid_path)" "$MACON_STATE/fake/proc_4242"
 # --- on: the descriptor it builds -------------------------------------------
 
 clean_machine
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 assert_ok "on arms a session" try_on 8 --max 12 --interval 60 --sentinel \
     --on-expire extend --extend-by 45 --pre-warn 20 --hook-end 'true'
 I="$(sess_desc_path)"
@@ -306,7 +318,7 @@ assert_eq "0" "$(fake_call_count 'pmset')" \
 # the seam instead: the guard has to hold for whatever trips it next.
 
 clean_machine
-MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\" &"
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 # shellcheck disable=SC2317,SC2329
 sess_set() {
     [ "$2" = "hook_end" ] && return 1
@@ -317,6 +329,104 @@ assert_fail "on refuses to arm when a descriptor field cannot be written" \
     try_on 8 --hook-end 'true'
 assert_eq "0" "$(fake_call_count 'pmset')" \
     "the write that failed stopped the ladder before it began"
+
+# --- the daemon is not loaded -----------------------------------------------
+#
+# The twin of the failsafe gate, and with no escape hatch: --no-failsafe exists
+# because the failsafe has a defensible degraded mode, and this has none. A
+# nohup fallback would be a second arming path that nothing exercises until the
+# day it is the only one left.
+
+clean_machine
+rm -f "$(snap_path)"
+rm -f "$MACON_STATE/fake/launchd_local.macon.helper"
+# cli_preflight is called directly here rather than through cli_cmd_on, so the
+# option set cli_parse_on would have published has to be stated: under `set -u`
+# an unread flag is a fatal error, not a default.
+OPT_ALLOW_BATTERY=0
+OPT_NO_FAILSAFE=0
+OUT=$( (cli_preflight) 2>&1 )
+assert_contains "$OUT" "helper daemon is not loaded" \
+    "preflight refuses when launchd does not have the job"
+assert_fail "and nothing was applied" plat_sleep_disabled
+assert_fail "and no snapshot was taken" snap_exists
+fake_set launchd_local.macon.helper "not running"
+
+# --- the descriptor is refused ----------------------------------------------
+#
+# `arm` is synchronous and checked, so a descriptor this machine cannot use is
+# refused HERE rather than inside a launchd job whose stderr goes nowhere. The
+# machine has already been mutated by then, so it must roll back.
+
+clean_machine
+MACON_HELPER_CMD="false"
+assert_fail "arming fails when the descriptor is refused" cli_arm "$D"
+assert_fail "disablesleep was rolled back" plat_sleep_disabled
+assert_eq "1" "$(plat_pmset_read sleep)" "the timers came back"
+assert_fail "and the descriptor was not left behind for a kickstart to obey" \
+    test -f "$(sess_desc_path)"
+
+# --- launchd refuses the kickstart ------------------------------------------
+
+clean_machine
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
+fake_set fail_launchd_kickstart 1
+assert_fail "arming fails when the daemon cannot be started" cli_arm "$D"
+assert_fail "disablesleep was rolled back" plat_sleep_disabled
+assert_fail "and the descriptor is gone" test -f "$(sess_desc_path)"
+fake_set fail_launchd_kickstart 0
+
+# --- the happy path goes through launchd ------------------------------------
+
+clean_machine
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
+fake_reset_calls
+assert_ok "arming succeeds" cli_arm "$D"
+assert_contains "$(fake_calls)" "launchd_kickstart local.macon.helper" \
+    "the helper is started by kickstarting the daemon, not by forking"
+assert_ok "the helper is alive by name" sess_helper_alive
+kill_stub
+
+# --- the default invocation names a verb the helper accepts -----------------
+#
+# Every case above substitutes MACON_HELPER_CMD, so the one command string that
+# ever runs in production is the one string the suite never executes. That blind
+# spot let this branch sit green while `bin/macon` still invoked a verb the
+# helper had stopped accepting -- `macon on` could not have started a session at
+# all, and nothing here would have said so.
+#
+# `sudo` is shadowed by a function, which a POSIX shell resolves ahead of PATH,
+# so the real command string is really evaluated and nothing is really elevated.
+# The verb is then read back out of the argument list and put to the real
+# helper: two files, one assertion, and neither one trusted to describe itself.
+
+clean_machine
+unset MACON_HELPER_CMD
+SUDO_ARGV="$MACON_STATE/sudo-argv"
+# shellcheck disable=SC2317,SC2329
+sudo() {
+    printf '%s\n' "$*" > "$SUDO_ARGV"
+    return 1
+}
+assert_fail "the default invocation runs when nothing overrides it" cli_arm "$D"
+unset -f sudo
+ARGV=$(cat "$SUDO_ARGV")
+assert_contains "$ARGV" "/macon-helper" "and it invokes the installed helper"
+
+HELPER_VERB=$(printf '%s\n' "$ARGV" | sed 's|.*/macon-helper ||' | cut -d' ' -f1)
+assert_eq "arm" "$HELPER_VERB" "with the arm verb"
+
+# The helper's own answer, not a second copy of the same assumption. An
+# unknown verb reaches the entry point's catch-all, whose usage line lists the
+# whole verb set; a verb it accepts never prints that.
+OUT=$(sh "$REPO_DIR/libexec/macon-helper" "$HELPER_VERB" 2>&1 || :)
+case "$OUT" in
+    *'usage: macon-helper {'*)
+        assert_eq "accepted" "rejected" "and the helper accepts that verb" ;;
+    *) assert_eq "accepted" "accepted" "and the helper accepts that verb" ;;
+esac
+
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 
 unset MACON_FAKE_NOW
 teardown_state
