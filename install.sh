@@ -377,24 +377,29 @@ install_failsafe_registered() {
 # Installed anywhere else it is a CLI that cannot find its own libraries, and
 # nothing says so until the next invocation.
 #
-# The note stops at what is actually true. The boot failsafe is fine: the
-# LaunchDaemon carries both paths in its own environment. `macon on` is NOT:
-# it starts the root helper through sudo, and sudo's env_reset drops
-# MACON_LIB before the helper reads it -- verified on this platform -- so the
-# helper looks under /usr/local whatever the user exported. That fails closed
-# (the session refuses to arm rather than arming unwatched), but a user told
-# only "export these two" would find out at the first `macon on`.
+# The exports are needed by the CLI's own process and by nothing else. Every
+# root component carries both paths explicitly: `macon on` restates them through
+# /usr/bin/env on the far side of sudo, precisely because env_reset drops them,
+# and the boot failsafe and the session helper daemon each name them in their
+# own EnvironmentVariables. So a non-default prefix is a complete install, and
+# the note says what to export rather than what will not work.
+#
+# What the note must not lose is that the exports have to outlive one shell.
+# `macon off` is a macon command like any other: a user who exported them for
+# the `macon on` and not for the terminal they run `off` in gets a CLI that
+# cannot find its own libraries at the moment they want their sleep back.
 install_prefix_note() {
     [ "$1" = "/usr/local" ] && return 0
     printf '\nnote: macon looks for its libraries under /usr/local by default.\n'
     printf 'Installed in %s, so export these before running it:\n' "$1"
     printf '  export MACON_LIB=%s/libexec/macon/lib\n' "$1"
     printf '  export MACON_LIBEXEC=%s/libexec/macon\n' "$1"
-    printf 'The boot failsafe carries both paths in its LaunchDaemon, so it is\n'
-    printf 'unaffected. Starting a session is not: macon on launches the root\n'
-    printf 'helper through sudo, which drops these variables, so it looks in\n'
-    printf '/usr/local and the session refuses to arm. Until that is fixed,\n'
-    printf 'only /usr/local supports starting a session.\n'
+    printf 'Put them in your shell profile rather than one terminal: EVERY macon\n'
+    printf 'command needs them, macon off included.\n'
+    printf 'Nothing macon starts for itself depends on your environment -- the\n'
+    printf 'boot failsafe and the helper daemon carry both paths in their own\n'
+    printf 'LaunchDaemons, and macon on restates them across sudo -- so a session\n'
+    printf 'starts here exactly as it would under /usr/local.\n'
     return 0
 }
 
