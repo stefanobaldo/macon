@@ -345,4 +345,55 @@ esac
 P=$(cli_helper_plist "/opt/a & b/macon-helper" "" "" "")
 assert_contains "$P" "/opt/a &amp; b/macon-helper" "the program path is XML-escaped"
 
+# --- what install.sh actually writes ----------------------------------------
+#
+# Everything above passes literal arguments, so the composition is untested by
+# it: a for_install that pointed the job at the wrong file, or at a bare
+# "macon-helper" with no directory, would render just as well and read just as
+# green. install.sh has no second opinion to compare against -- this function's
+# output IS the plist that lands in /Library/LaunchDaemons.
+#
+# MACON_LIB and MACON_LIBEXEC are the /opt values set further up, which is the
+# case that matters: a hard-coded /usr/local would be invisible under the
+# default prefix.
+P=$(cli_helper_plist_for_install)
+assert_contains "$P" "<string>/opt/macon-libexec/macon-helper</string>" \
+    "the daemon's program is composed from MACON_LIBEXEC"
+assert_contains "$P" "<key>MACON_LIB</key><string>/opt/macon-libexec/lib</string>" \
+    "and it carries the library path this CLI is running from"
+assert_contains "$P" "<key>MACON_LIBEXEC</key><string>/opt/macon-libexec</string>" \
+    "and the libexec directory it was installed into"
+assert_contains "$P" "<key>MACON_STATE</key><string>$MACON_STATE</string>" \
+    "and the state directory of the user installing it"
+printf '%s\n' "$P" > "$MACON_STATE/helper-install.plist"
+assert_ok "and produces a plist macOS will parse" \
+    plutil -lint "$MACON_STATE/helper-install.plist"
+assert_eq "/opt/macon-libexec/macon-helper" \
+    "$(plutil -extract ProgramArguments.0 raw -o - "$MACON_STATE/helper-install.plist")" \
+    "and macOS reads that program back as an absolute path"
+
+# The verb install.sh calls, dispatched the way install.sh dispatches it: a real
+# subprocess with both paths in its environment. Nothing else in the suite runs
+# it, so the entry point could stop routing __helper_plist entirely -- or route
+# it to the failsafe's renderer -- and every assertion above would still hold.
+#
+# The paths are this checkout's, not the /opt strings above, because the
+# subprocess has to SOURCE what MACON_LIB names before it can render anything.
+MACON_LIB="$REPO_DIR/lib"
+MACON_LIBEXEC="$REPO_DIR/libexec"
+EXPECT=$(cli_helper_plist_for_install)
+#
+# MACON_CLI_SOURCED is cleared for the child: this file exports it so sourcing
+# the CLI does not run it, and inheriting it would make the subprocess skip the
+# very dispatch block under test and exit 0 with no output.
+V=$(MACON_CLI_SOURCED='' MACON_LIB="$REPO_DIR/lib" \
+    MACON_LIBEXEC="$REPO_DIR/libexec" MACON_STATE="$MACON_STATE" \
+    sh "$REPO_DIR/bin/macon" __helper_plist)
+assert_contains "$V" "<key>Label</key><string>local.macon.helper</string>" \
+    "the __helper_plist verb renders the helper's daemon"
+assert_contains "$V" "<string>$REPO_DIR/libexec/macon-helper</string>" \
+    "with the program path built from the environment install.sh hands it"
+assert_eq "$EXPECT" "$V" \
+    "and the verb is that renderer, not a second copy of it"
+
 teardown_state
