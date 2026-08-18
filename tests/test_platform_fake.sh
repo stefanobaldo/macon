@@ -82,4 +82,49 @@ _unfaked=$(comm -23 "$_real_list" "$_fake_list" | grep -vxF "$PURE_PREDICATES" |
 assert_eq "" "$_unfaked" \
     "every machine-touching plat_ function has a fake, so no test reaches the real Mac"
 
+# --- launchd, through the fake ----------------------------------------------
+#
+# The fake models a job as a scripted state file, so "loaded" and "running" stay
+# separate facts: a KeepAlive job whose program exited 0 is loaded and NOT
+# running, and that is the state macon's own daemon sits in whenever no session
+# is armed.
+
+assert_fail "an unscripted label is not loaded" plat_launchd_loaded local.macon.helper
+
+fake_set launchd_local.macon.helper "not running"
+assert_ok "a scripted label is loaded" plat_launchd_loaded local.macon.helper
+assert_eq "not running" "$(plat_launchd_state local.macon.helper)" \
+    "a loaded job reports the state it was scripted with"
+
+fake_reset_calls
+assert_ok "kickstart succeeds" plat_launchd_kickstart local.macon.helper
+assert_eq "running" "$(plat_launchd_state local.macon.helper)" \
+    "kickstart puts the job into the running state"
+assert_contains "$(fake_calls)" "launchd_kickstart local.macon.helper" \
+    "the kickstart is recorded"
+
+fake_set launchd_runs_local.macon.helper 3
+assert_eq "3" "$(plat_launchd_runs local.macon.helper)" \
+    "the run counter is readable"
+
+fake_reset_calls
+assert_ok "bootout succeeds" plat_launchd_bootout local.macon.helper
+assert_fail "bootout leaves the job unloaded" plat_launchd_loaded local.macon.helper
+assert_contains "$(fake_calls)" "launchd_bootout local.macon.helper" \
+    "the bootout is recorded"
+
+fake_reset_calls
+assert_ok "bootstrap succeeds" \
+    plat_launchd_bootstrap local.macon.helper /tmp/nonexistent.plist
+assert_ok "bootstrap leaves the job loaded" plat_launchd_loaded local.macon.helper
+assert_contains "$(fake_calls)" "launchd_bootstrap local.macon.helper" \
+    "the bootstrap is recorded"
+
+# Scripted failure, the same way every other mutating call in the fake fails:
+# these are the paths that only run when something has gone wrong.
+fake_set fail_launchd_bootout 1
+assert_fail "a refused bootout reports failure" plat_launchd_bootout local.macon.helper
+assert_ok "and leaves the job loaded" plat_launchd_loaded local.macon.helper
+fake_set fail_launchd_bootout 0
+
 teardown_state

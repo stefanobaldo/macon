@@ -118,6 +118,43 @@ plat_boot_time() { fake_get_or boot_time 1700000000; }
 
 plat_launchctl() { fake_record "launchctl $*"; }
 
+# Scripted launchd. `fake_set launchd_<label> "<state>"` makes that job loaded
+# with that state; an unscripted label is not loaded at all. Loaded and running
+# are deliberately separate: macon's own daemon spends most of its life loaded
+# and not running, and a fake that could not express that would leave the
+# no-session path untested.
+#
+# The mutating verbs are recorded like the pmset writers, because ORDER is what
+# `macon off` has to be pinned on -- bootout before restore is the difference
+# between stopping a session and racing a helper KeepAlive keeps reviving.
+plat_launchd_loaded() { [ -n "$(fake_get "launchd_$1")" ]; }
+
+plat_launchd_state() { fake_get "launchd_$1"; }
+
+plat_launchd_runs() { fake_get "launchd_runs_$1"; }
+
+plat_launchd_kickstart() {
+    fake_record "launchd_kickstart $1"
+    _fake_should_fail launchd_kickstart && return 1
+    fake_set "launchd_$1" running
+}
+
+# Takes the label as well as the path so the fake can model the resulting
+# state. The real implementation reads the label out of the plist, exactly as
+# launchd does, so passing it costs nothing and buys a fake that can answer
+# `plat_launchd_loaded` afterwards.
+plat_launchd_bootstrap() {
+    fake_record "launchd_bootstrap $1 $2"
+    _fake_should_fail launchd_bootstrap && return 1
+    fake_set "launchd_$1" running
+}
+
+plat_launchd_bootout() {
+    fake_record "launchd_bootout $1"
+    _fake_should_fail launchd_bootout && return 1
+    rm -f "$FAKE_DIR/launchd_$1"
+}
+
 # Scripted process table: `fake_set proc_<pid> "<command line>"` makes that PID
 # live with that command, and an unscripted PID is simply not running. Matching
 # goes through grep exactly as the real implementation does, so a test cannot

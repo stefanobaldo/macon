@@ -301,7 +301,7 @@ cli_failsafe_loaded() {
     case "$MACON_FS_LOADED" in
         yes) return 0 ;;
         no) return 1 ;;
-        *) launchctl print "system/$MACON_FS_LABEL" >/dev/null 2>&1 ;;
+        *) plat_launchd_loaded "$MACON_FS_LABEL" ;;
     esac
 }
 
