@@ -730,4 +730,38 @@ assert_fail "and the machine is left able to sleep" plat_sleep_disabled
 assert_fail "with the run files cleared" test -f "$(sess_heartbeat_path)"
 
 unset MACON_FAKE_NOW
+
+# --- what launchd runs ------------------------------------------------------
+#
+# helper_watch is the whole startup decision, and the case that looks like an
+# omission is the one that matters: NO descriptor must not heal. At boot,
+# /var/run is cleared, so the helper launchd starts lands exactly there -- and
+# healing would race the boot failsafe, which is the component that owns the
+# boot restore. Two restorers means two index rows and a wrong reason on the one
+# night that matters most.
+
+setup_desc
+rm -f "$D"
+fake_set sleep_disabled yes
+fake_reset_calls
+assert_ok "watch with no descriptor exits 0" helper_watch
+assert_eq "0" "$(fake_call_count 'pmset')" \
+    "watch with no descriptor touches no power setting"
+assert_ok "and heals nothing, so it cannot race the boot failsafe" \
+    plat_sleep_disabled
+assert_fail "and writes no pid file" test -f "$(sess_pid_path)"
+
+# An unusable descriptor is the opposite case: something IS armed and its
+# parameters cannot be read, so the session must end. This is helper_finish's
+# own path, reached at startup instead of at a poll.
+setup_desc
+sess_set "$D" hard_ceiling "not-a-number"
+fake_set sleep_disabled yes
+fake_reset_calls
+assert_ok "watch with an unusable descriptor exits 0" helper_watch
+assert_fail "and restores the machine" plat_sleep_disabled
+assert_fail "and consumes the descriptor" test -f "$D"
+assert_contains "$(rec_sessions 0)" "invalid-descriptor" \
+    "and records why the session ended"
+
 teardown_state
