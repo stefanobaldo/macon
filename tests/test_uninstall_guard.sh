@@ -272,8 +272,15 @@ assert_eq "$CLI_PLIST" "$(helper_default "$REPO_DIR/uninstall.sh" MACON_HELPER_P
 UW="$MACON_STATE/uninstall-run"
 USHIM="$UW/shim"
 UCALLS="$UW/calls"
-mkdir -p "$USHIM" "$UW/prefix"
+mkdir -p "$USHIM" "$UW/prefix/bin"
 : > "$UCALLS"
+
+# A CLI in the fake prefix, standing in for the one an install put there. The
+# component removal has not run when the abort below fires, so this is the state
+# the abort's `macon off` line is printed for -- and the state it is printed in
+# by the runs that follow.
+printf '#!/bin/sh\nexit 0\n' > "$UW/prefix/bin/macon"
+chmod 755 "$UW/prefix/bin/macon"
 for _c in sudo rm pmset cp chown chmod ln mv; do
     printf '#!/bin/sh\nprintf "%%s %%s\\n" "%s" "$*" >> "%s"\nexit 0\n' \
         "$_c" "$UCALLS" > "$USHIM/$_c"
@@ -316,7 +323,7 @@ run_uninstall_main() (
     MACON_FS_PLIST="$UW/local.macon.failsafe.plist"
     MACON_HELPER_PLIST="$UW/local.macon.helper.plist"
     MACON_HELPER_LABEL=local.macon.test
-    uninstall_main > "$UW/out" 2>&1
+    uninstall_main "$@" > "$UW/out" 2>&1
 )
 
 # The recorder is proved to record before it is read: a shim directory that was
@@ -391,5 +398,77 @@ assert_fail "and the components are NOT removed, so nothing crash-loops" \
     grep -q "rm -rf .*libexec/macon" "$UCALLS"
 assert_fail "which is also what 'macon is uninstalled' must not claim" \
     grep -q "macon is uninstalled" "$UW/out"
+
+# --- and the same abort reached through --force -----------------------------
+#
+# The mode the message has to be true in and nearly was not. `--force` walks
+# past a `sleep-disabled` blocker after uninstall_main has told this very user
+# the Mac may be unable to sleep and to run `pmset -a disablesleep 0`, then
+# falls straight through to the abort. An abort that answered "this Mac can
+# still sleep" would contradict the warning printed a dozen lines earlier, on
+# the one path where the reassurance is false.
+
+cat > "$USHIM/ioreg" <<'IOREG'
+#!/bin/sh
+printf '    |   "SleepDisabled" = Yes\n'
+IOREG
+chmod 755 "$USHIM/ioreg"
+
+: > "$UCALLS"
+assert_fail "a --force uninstall stops at the same daemon" run_uninstall_main --force
+FORCED=$(cat "$UW/out")
+assert_contains "$FORCED" "may be unable" \
+    "having warned that this Mac may be unable to sleep"
+assert_contains "$FORCED" "still loaded" "and it still refuses to remove the components"
+assert_fail "and never answers that this Mac can still sleep" \
+    grep -q "can still sleep" "$UW/out"
+assert_fail "nor removes the components on that path either" \
+    grep -q "rm -rf .*libexec/macon" "$UCALLS"
+
+# --- the claims the message makes, read on their own ------------------------
+#
+# Two of them are about what it must NOT say, and one is conditional, so the
+# function is called directly rather than inferred from a run. Every sentence
+# has to hold in both modes above; the way to keep that true is to make no
+# claim that depends on which one it is.
+
+(
+    MACON_PREFIX="$UW/prefix"
+    MACON_HELPER_LABEL=local.macon.test
+    MACON_HELPER_PLIST="$UW/local.macon.helper.plist"
+    uninstall_explain_stuck_helper
+) 2> "$UW/msg"
+MSG=$(cat "$UW/msg")
+
+# `uninstall_explain_stuck_failsafe` makes no sleep claim either. It says what
+# is stuck, what was and was not removed, and what to run -- and it is right,
+# because neither function can know: --force overrode the blocker that would
+# have answered the question.
+assert_fail "the abort claims nothing about whether this Mac can sleep" \
+    grep -q sleep "$UW/msg"
+# An upper bound on what went, not an assertion that a failsafe ever existed:
+# uninstall_failsafe_remove no-ops when there is no CLI to run it, and
+# uninstall_failsafe_present then never fires, so a Mac that never had one
+# reaches the abort having had nothing removed at all.
+assert_contains "$MSG" "nothing was removed but the boot failsafe" \
+    "it bounds what went rather than claiming a failsafe was removed"
+assert_contains "$MSG" "$UW/prefix/bin/macon is still installed" \
+    "it points at the CLI the abort left in place"
+assert_contains "$MSG" "macon off" \
+    "and at the command that ends a session, which is the useful thing to say"
+
+# The conditional half: no CLI, no instruction to run one. `macon on
+# --no-failsafe` exists, so the abort cannot claim a session is impossible
+# either -- it claims nothing about sessions except how to end one.
+(
+    MACON_PREFIX="$UW/no-such-prefix"
+    MACON_HELPER_LABEL=local.macon.test
+    MACON_HELPER_PLIST="$UW/local.macon.helper.plist"
+    uninstall_explain_stuck_helper
+) 2> "$UW/msg-nocli"
+assert_fail "with no CLI on disk it does not tell the user to run one" \
+    grep -q "macon off" "$UW/msg-nocli"
+assert_contains "$(cat "$UW/msg-nocli")" "still loaded" \
+    "though the refusal itself stands either way"
 
 teardown_state
