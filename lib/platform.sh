@@ -206,6 +206,66 @@ plat_launchctl() {
     launchctl "$@"
 }
 
+# Has launchd loaded JOB? The exit status is the ENTIRE signal (0 loaded, 113
+# not); nothing here reads the output, whose shape changes between macOS
+# releases. It works unprivileged, which is what lets `macon status` ask.
+#
+# It is still not proof the job would do anything -- a loaded job can point at a
+# program that exits immediately, which is in fact what macon's own helper does
+# when no session is armed. It is strictly more than a test for the plist file,
+# which a job can outlive: verified, deleting the plist leaves the job loaded
+# and still respawning.
+plat_launchd_loaded() {
+    launchctl print "system/$1" >/dev/null 2>&1
+}
+
+# `running`, `not running`, or nothing.
+#
+# Unlike plat_launchd_loaded this DOES parse, so it is best-effort by
+# construction and every caller must treat empty as "no reading". The anchor is
+# a single leading tab: `launchctl print` also emits `state = active` lines for
+# nested endpoints, two tabs in, and a looser match would report one of those.
+plat_launchd_state() {
+    launchctl print "system/$1" 2>/dev/null |
+        awk -F' = ' '$1 == "\tstate" { print $2; exit }'
+}
+
+# How many times launchd has started JOB since it loaded it. Best-effort for
+# the same reason as plat_launchd_state.
+#
+# This is the respawn counter, maintained by launchd at no cost to macon: during
+# a session, a value above 1 means the helper died and came back.
+plat_launchd_runs() {
+    launchctl print "system/$1" 2>/dev/null |
+        awk '$1 == "runs" && $2 == "=" { print $3; exit }'
+}
+
+# Start a stopped job. Note what this does NOT do: on a job that is already
+# running it is a no-op, and restarting one needs `kickstart -k`, which is
+# root-only. Verified.
+plat_launchd_kickstart() {
+    _plat_root_run launchctl kickstart "system/$1"
+}
+
+# Register a job. LABEL is unused here -- launchd reads it from the plist -- and
+# is in the signature so the test fake can model the resulting state.
+#
+# Bootstrapping over an already-loaded label fails with EIO (verified), so
+# callers must ensure the label is not loaded first.
+plat_launchd_bootstrap() {
+    _plat_root_run launchctl bootstrap system "$2"
+}
+
+# Stop and unregister a job. Verified: SIGTERM, the process is gone, the job is
+# unloaded, and KeepAlive does NOT respawn it. This is the only thing that stops
+# a KeepAlive job -- `launchctl kill` kills the process and launchd revives it.
+#
+# On a job that is not loaded it returns 3 ("No such process"), which callers
+# distinguish from a real failure.
+plat_launchd_bootout() {
+    _plat_root_run launchctl bootout "system/$1"
+}
+
 # Is PID a live process whose command matches PATTERN? Both halves matter.
 # Liveness alone is not enough: ${MACON_RUN} is cleared at boot so a recorded
 # PID cannot survive a reboot, but within one uptime the kernel will happily
