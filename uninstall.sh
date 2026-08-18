@@ -158,6 +158,40 @@ uninstall_explain_stuck_failsafe() {
     return 0
 }
 
+uninstall_helper_loaded() {
+    launchctl print "system/$MACON_HELPER_LABEL" >/dev/null 2>&1
+}
+
+# Reached when launchd still has the helper's label after the bootout. Same
+# rule as the boot failsafe above -- do not remove the components while a job
+# still points at them -- and a strictly worse case than that one.
+#
+# The failsafe's job is RunAtLoad: pointed at a deleted program it is one error
+# per boot. The helper's plist is KeepAlive {SuccessfulExit: false} with
+# ThrottleInterval 10 (see `macon __helper_plist` in bin/macon), so the same
+# mistake respawns a root process every ten seconds, indefinitely, on a machine
+# whose owner believes macon is gone.
+#
+# So this aborts rather than warning and carrying on. It fails CLOSED: the boot
+# failsafe is already removed by this point, and `macon on` refuses without it,
+# so no new session can start -- and the three blockers checked at the top of
+# uninstall_main already established that this Mac can sleep right now. What is
+# left is a loaded job and the tools to take it out, which is recoverable; the
+# other branch is a root crash-loop nobody asked for and nothing reports.
+uninstall_explain_stuck_helper() {
+    printf 'macon: the helper daemon is still loaded:\n' >&2
+    printf 'macon:   %s\n' "$MACON_HELPER_LABEL" >&2
+    printf 'macon: the boot failsafe was removed; nothing else was. Deleting the\n' >&2
+    printf 'macon: components now would leave a KeepAlive root job respawning a\n' >&2
+    printf 'macon: program that is gone, every few seconds, for ever.\n' >&2
+    printf 'macon: this Mac can still sleep, and macon refuses to start a session\n' >&2
+    printf 'macon: without the boot failsafe, so nothing new can hold it awake.\n' >&2
+    printf 'macon: stop the job by hand, then run this again:\n' >&2
+    printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
+    printf 'macon:   sudo rm -f %s\n' "$MACON_HELPER_PLIST" >&2
+    return 0
+}
+
 # Removing the boot failsafe goes through the CLI, which refuses while this Mac
 # still looks like it is holding a session -- the same three blockers checked
 # here. FORCE is the decision already taken above, passed through: without it,
@@ -253,17 +287,18 @@ uninstall_main() {
     # respawn landing between the two would start a program that is no longer on
     # disk; and after the abort above, which promises nothing else was removed.
     #
-    # `bootout` of a job launchd does not have exits 3 (No such process), which
-    # is the ordinary case on a machine where no session ever ran -- not a
-    # condition to report. The check below is what catches a bootout that failed
-    # for a reason that matters.
+    # `bootout` of a job launchd does not have exits 3 (ESRCH, "No such
+    # process"), which is the ordinary case on a machine where no session ever
+    # ran -- not a condition to report. launchd is asked directly instead, and
+    # the plist is deleted only once it has answered that the job is gone: on
+    # the other branch the file is what the by-hand instructions need.
     printf 'stopping the helper daemon...\n'
     sudo launchctl bootout "system/$MACON_HELPER_LABEL" 2>/dev/null || :
-    sudo rm -f "$MACON_HELPER_PLIST"
-    if launchctl print "system/$MACON_HELPER_LABEL" >/dev/null 2>&1; then
-        printf 'macon: the helper daemon is still loaded; finish by hand:\n' >&2
-        printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
+    if uninstall_helper_loaded; then
+        uninstall_explain_stuck_helper
+        exit 1
     fi
+    sudo rm -f "$MACON_HELPER_PLIST"
 
     printf 'removing %s/bin/macon and %s/libexec/macon...\n' \
         "$MACON_PREFIX" "$MACON_PREFIX"
