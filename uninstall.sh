@@ -195,10 +195,18 @@ uninstall_explain_stuck_helper() {
     # Actionable rather than reassuring, and printed only when it is true: the
     # component removal has not run yet, so whatever CLI was installed is still
     # installed, and `macon off` is the one command that ends a live session.
+    #
+    # Spelled out in full rather than as `macon off`. Under a non-default prefix
+    # a bare `macon` is on nobody's PATH, and even by full path the CLI defaults
+    # MACON_LIB and MACON_LIBEXEC to /usr/local -- so the short form names a
+    # command that can fail twice over, at the one moment the user needs it to
+    # work. This form runs whatever the prefix.
     if [ -x "$MACON_PREFIX/bin/macon" ]; then
         printf 'macon: %s/bin/macon is still installed: if this Mac is holding a\n' \
             "$MACON_PREFIX" >&2
-        printf "macon: session, run 'macon off' before trying again.\n" >&2
+        printf 'macon: session, end it before trying again with:\n' >&2
+        printf 'macon:   MACON_LIB=%s/libexec/macon/lib MACON_LIBEXEC=%s/libexec/macon %s/bin/macon off\n' \
+            "$MACON_PREFIX" "$MACON_PREFIX" "$MACON_PREFIX" >&2
     fi
     printf 'macon: stop the job by hand, then run this again:\n' >&2
     printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
