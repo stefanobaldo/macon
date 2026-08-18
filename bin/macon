@@ -493,9 +493,15 @@ cli_arm() {
     # Step 3: tell launchd to start it. From here the daemon owns the process:
     # if it dies, KeepAlive brings it back and it resumes from the descriptor
     # installed above.
+    # The pid file goes too, like every failure below this point. `arm` writes
+    # none, so today this clears nothing -- but a kickstart that failed is a
+    # kickstart whose outcome is not known, and `watch` writes the pid before it
+    # does anything else. Leaving one behind would make sess_helper_alive report
+    # a session over a machine this branch has just restored, which is the one
+    # wrong answer that matters.
     if ! plat_launchd_kickstart "$MACON_HELPER_LABEL"; then
         cli_rollback "the helper daemon could not be started"
-        cli_remove_run_files "$(sess_desc_path)"
+        cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)"
         return 1
     fi
 

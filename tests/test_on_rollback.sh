@@ -382,6 +382,13 @@ fake_set fail_launchd_kickstart 1
 assert_fail "arming fails when the daemon cannot be started" cli_arm "$D"
 assert_fail "disablesleep was rolled back" plat_sleep_disabled
 assert_fail "and the descriptor is gone" test -f "$(sess_desc_path)"
+# The pid file too, like every rollback below this point. The real `arm` writes
+# none, so on a real machine there is usually nothing here to clear -- but a
+# kickstart that failed is a kickstart whose outcome is not known, and `watch`
+# writes the pid before it does anything else.
+assert_fail "and the pid file with it" test -f "$(sess_pid_path)"
+assert_fail "so nothing reports a live helper over a machine just restored" \
+    sess_helper_alive
 fake_set fail_launchd_kickstart 0
 
 # --- the happy path goes through launchd ------------------------------------
