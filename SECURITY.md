@@ -1,7 +1,8 @@
 # Security Policy
 
-macon asks for your root password. It installs a LaunchDaemon and runs a helper
-as root. That deserves a stated threat model rather than a boilerplate file.
+macon asks for your root password. It installs two LaunchDaemons and runs a
+helper as root. That deserves a stated threat model rather than a boilerplate
+file.
 
 ## What runs as root
 
@@ -10,6 +11,35 @@ as root. That deserves a stated threat model rather than a boilerplate file.
 | `macon` | the invoking user | parses flags, validates them, writes the session descriptor, reads state |
 | `macon-helper` | root | applies `pmset`, runs the watch loop, samples, restores |
 | `local.macon.failsafe` | root, via `launchd` | restores the power configuration at boot |
+| `local.macon.helper` | root, via `launchd` | runs `macon-helper watch` for the length of a session, and starts it again if it dies abnormally |
+
+## The helper daemon is permanently loaded
+
+`install.sh` registers `local.macon.helper` and leaves it loaded. It is a
+`KeepAlive` job, so `launchd` starts it when it is loaded and restarts it
+whenever it dies abnormally — which is the point: a session whose helper is
+killed resumes instead of leaving this Mac unable to sleep. Between sessions the
+job stays loaded with no process running.
+
+**While it sits there idle, any local account can `launchctl kickstart` it
+without a password, and the process starts as root.** That is a real change to
+the threat model and it is stated here rather than softened.
+
+What bounds it was measured, not assumed:
+
+- The process `launchd` starts takes no arguments and reads nothing supplied
+  from outside: `macon-helper watch` works from its own root-owned copy of the
+  session descriptor, at `/var/run/macon/session.conf`. With no descriptor there
+  it exits 0 having applied nothing. That file is written by root, owned by
+  root, mode 0644, inside a root-owned directory an unprivileged user cannot
+  create anything in — so a user without a password cannot put one there for it
+  to read.
+- With a session already running, `kickstart` on a running job is a no-op.
+  `kickstart -k`, `bootout` and `bootstrap` all require root. An unprivileged
+  user cannot disturb a session in progress.
+
+So the exposure this adds is: start a root process that reads one file and
+exits.
 
 ## Design rules
 

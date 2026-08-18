@@ -58,7 +58,74 @@ for _c in on run off status report saved log failsafe version help; do
     assert_ok "zsh completion offers '$_c'" grep -qF "$_c" "$ZSH_C"
 done
 
+# --- the launchd daemon the docs now promise --------------------------------
+#
+# The label and the descriptor path are READ OUT OF THE CODE and then looked for
+# in the files, rather than typed here a second time. An assertion carrying its
+# own copy of a name passes happily after a rename that left every document
+# naming a job launchd does not have -- which is the exact failure this section
+# exists to catch.
+SECURITY="$REPO_DIR/SECURITY.md"
+assert_ok "SECURITY.md exists" test -f "$SECURITY"
+
+doc_default() {
+    sed -n "s/^$2=\${$2:-\(.*\)}$/\1/p" "$1" | head -1
+}
+HELPER_LABEL=$(doc_default "$REPO_DIR/bin/macon" MACON_HELPER_LABEL)
+# Guarded BEFORE it is used: a parse that came back empty turns every `grep -F`
+# below into a match against nothing, and the whole section into decoration.
+assert_contains "$HELPER_LABEL" "local.macon." \
+    "the CLI's helper daemon label parses"
+assert_ok "the README names the daemon launchd actually loads" \
+    grep -qF "$HELPER_LABEL" "$README"
+assert_ok "and so does SECURITY.md's table of what runs as root" \
+    grep -qF "$HELPER_LABEL" "$SECURITY"
+
+# Derived by running the code, not by matching a literal: this is the one path
+# SECURITY.md offers as the bound on the unprivileged kickstart, so a helper
+# that started reading somewhere else must not leave that paragraph standing.
+DESC_PATH=$(unset MACON_RUN; . "$REPO_DIR/lib/common.sh"; . "$REPO_DIR/lib/session.sh"; sess_desc_path)
+assert_contains "$DESC_PATH" "/session.conf" \
+    "the session descriptor path derives from the code"
+assert_ok "and is absolute" test "${DESC_PATH#/}" != "$DESC_PATH"
+assert_ok "SECURITY.md names the file that bounds the kickstart exposure" \
+    grep -qF "$DESC_PATH" "$SECURITY"
+
+# Prose claims are matched against the file with its line wrapping removed, so
+# a whole sentence can be pinned rather than the four words that happen to share
+# a line with the keyword, and a reflow does not silently drop the pin.
+says() { tr '\n' ' ' < "$1" | tr -s ' ' | grep -qF "$2"; }
+
+assert_ok "the README says the daemon is registered at install time" \
+    says "$README" "that \`install.sh\` registers"
+assert_ok "and that a session cannot start without it" \
+    says "$README" \
+    "macon refuses to start a session unless \`launchd\` has that job loaded"
+# The claim above is proven as behaviour in tests/test_on_rollback.sh, which
+# runs cli_preflight against a machine launchd has no job on. What is checked
+# here is that the CLI still contains the refusal the README describes...
+assert_ok "and the CLI still refuses in those words" \
+    grep -qF 'macon_die "the macon helper daemon is not loaded' "$REPO_DIR/bin/macon"
+# ...and that the escape hatch the README promises does not exist stayed absent.
+# --no-failsafe is the precedent that makes this worth pinning: the moment a
+# --no-helper is added, the README sentence is false and nothing else notices.
+assert_fail "and no flag was added that overrides it" \
+    grep -qE '\-\-no-(helper|daemon|supervision)' "$REPO_DIR/bin/macon"
+
+assert_ok "SECURITY.md states the unprivileged kickstart plainly" \
+    says "$SECURITY" \
+    "any local account can \`launchctl kickstart\` it without a password"
+assert_ok "and what bounds it" \
+    says "$SECURITY" "exits 0 having applied nothing"
+
 # The changelog has to describe the release, not still be the empty heading
 # Task 1 created.
 CHANGELOG="$REPO_DIR/CHANGELOG.md"
 assert_ok "the changelog names a version" grep -qE '^## \[?0\.1\.0' "$CHANGELOG"
+# And the unreleased section has to carry the change of the moment: a session
+# that survives its helper being killed is the user-visible half of the whole
+# supervision work, and a changelog that omits it describes a different tool.
+assert_ok "the changelog names the helper daemon" \
+    grep -qF "$HELPER_LABEL" "$CHANGELOG"
+assert_ok "and says what that bought the user" \
+    says "$CHANGELOG" "A session no longer ends when its helper does"
