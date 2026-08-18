@@ -492,6 +492,20 @@ for _c in sudo launchctl; do
     chmod 755 "$HSHIM/$_c"
 done
 
+# sudo again, this time able to fail one call. Every privileged step runs
+# through it, so a stub that can only ever return 0 leaves the status handling
+# below with nothing to handle. TEST_BOOTOUT_RC is read at run time and
+# defaults to 0, so the successful run above is unchanged by it.
+cat > "$HSHIM/sudo" <<SHIM
+#!/bin/sh
+printf 'sudo %s\n' "\$*" >> "$HCALLS"
+case "\$*" in
+    *bootout*) exit "\${TEST_BOOTOUT_RC:-0}" ;;
+esac
+exit 0
+SHIM
+chmod 755 "$HSHIM/sudo"
+
 # The prefix's CLI, standing in for the one an install has just copied there.
 # install_helper_daemon calls it by absolute path, so nothing here depends on
 # the shimmed PATH.
@@ -525,8 +539,12 @@ assert_ok "install_helper_daemon runs to the end" run_helper_daemon
 CALLED=$(cat "$HCALLS")
 assert_contains "$CALLED" "bootout system/local.macon.test" \
     "it boots the label out before registering it"
+# The path, not the file: the sudo shim records its arguments and writes
+# nothing, so there is no plist on disk here to have been written. What this
+# pins is that the job is bootstrapped from MACON_HELPER_PLIST -- the same path
+# the CLI's daemon checks look at.
 assert_contains "$CALLED" "bootstrap system $HW/local.macon.test.plist" \
-    "and bootstraps the plist it just wrote"
+    "and bootstraps the plist path it installs to"
 # The order is the assertion, not the presence: bootstrap over a label launchd
 # already has fails with EIO (verified), so a bootout that ran afterwards -- or
 # not at all -- leaves an upgrade running the old registration.
@@ -534,5 +552,65 @@ BOOTOUT_AT=$(printf '%s\n' "$CALLED" | grep -n 'bootout' | head -1 | cut -d: -f1
 BOOTSTRAP_AT=$(printf '%s\n' "$CALLED" | grep -n 'bootstrap' | head -1 | cut -d: -f1)
 assert_ok "the bootout comes first, which is what makes an upgrade take" \
     test "$BOOTOUT_AT" -lt "$BOOTSTRAP_AT"
+
+# --- a bootout that booted nothing out --------------------------------------
+#
+# `|| :` on that bootout swallowed every status it could return. Two of them
+# are ordinary -- 0, booted out, and 3, ESRCH, the label was not loaded, which
+# is every first install -- and any other means the OLD job may still be there.
+# The installer's own `launchctl print` check cannot tell the difference: it
+# sees a registered job either way. This function is the only place the number
+# exists.
+
+: > "$HCALLS"
+TEST_BOOTOUT_RC=3
+export TEST_BOOTOUT_RC
+OUT=$(run_helper_daemon 2>&1)
+case "$OUT" in
+    *"could not unload"*)
+        assert_eq "quiet" "warned" \
+            "ESRCH is a first install and must not be reported as a problem" ;;
+    *)
+        assert_eq "quiet" "quiet" \
+            "a label launchd never had is not a finding" ;;
+esac
+
+: > "$HCALLS"
+TEST_BOOTOUT_RC=5
+OUT=$(run_helper_daemon 2>&1)
+assert_contains "$OUT" "could not unload" \
+    "any other status is reported instead of swallowed"
+assert_contains "$OUT" "5" "naming the status launchctl actually returned"
+assert_contains "$(cat "$HCALLS")" "bootstrap system" \
+    "and the registration is still attempted -- this warns, it does not abort"
+unset TEST_BOOTOUT_RC
+
+# --- a render that produced no plist ----------------------------------------
+#
+# The old form piped the CLI into `sudo tee`, and a pipeline reports its LAST
+# command: a CLI that died still left the whole thing exiting 0 over an EMPTY
+# root-owned plist. chown and chmod succeed on it, bootstrap rejects it, and
+# what stays behind is a file launchd fails to parse at every boot until
+# someone reinstalls.
+#
+# These replace the prefix CLI, so they come after every assertion that needs a
+# working one.
+
+: > "$HCALLS"
+printf '#!/bin/sh\nexit 1\n' > "$HW/prefix/bin/macon"
+chmod 755 "$HW/prefix/bin/macon"
+assert_fail "a CLI that cannot render the plist fails the registration" \
+    run_helper_daemon
+assert_fail "and nothing is installed at the plist path" \
+    grep -q "local.macon.test.plist" "$HCALLS"
+assert_fail "and no job is bootstrapped over it" grep -q bootstrap "$HCALLS"
+
+# The half a pipeline cannot see at all: exit 0 with nothing on stdout.
+: > "$HCALLS"
+printf '#!/bin/sh\nexit 0\n' > "$HW/prefix/bin/macon"
+chmod 755 "$HW/prefix/bin/macon"
+assert_fail "an empty render fails the registration too" run_helper_daemon
+assert_fail "and installs nothing either" \
+    grep -q "local.macon.test.plist" "$HCALLS"
 
 teardown_state
