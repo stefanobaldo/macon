@@ -427,7 +427,25 @@ assert_eq "arm" "$HELPER_VERB" "with the arm verb"
 # The helper's own answer, not a second copy of the same assumption. An
 # unknown verb reaches the entry point's catch-all, whose usage line lists the
 # whole verb set; a verb it accepts never prints that.
-OUT=$(sh "$REPO_DIR/libexec/macon-helper" "$HELPER_VERB" 2>&1 || :)
+#
+# It runs against the fake platform layer, like everything else in this file.
+# Left alone, this subprocess inherits MACON_LIB=$REPO_DIR/lib from
+# tests/run.sh and sources the REAL lib/platform.sh -- safe today only because
+# the verb that comes out happens to be `arm`, which dies at the entry point
+# for want of a descriptor. Nothing here guarantees that: the verb is read out
+# of an argument list on purpose, and the day it reads `watch` this line would
+# put `sudo pmset` on the maintainer's own machine. The state and run roots are
+# redirected with it so the probe cannot write into this test's own.
+PROBE_LIB="$MACON_STATE/probe-lib"
+mkdir -p "$PROBE_LIB"
+for _lib in "$REPO_DIR"/lib/*.sh; do
+    ln -sf "$_lib" "$PROBE_LIB/$(basename "$_lib")"
+done
+ln -sf "$TESTS_DIR/fake-platform.sh" "$PROBE_LIB/platform.sh"
+PROBE_STATE="$MACON_STATE/probe-state"
+PROBE_RUN="$MACON_STATE/probe-run"
+OUT=$(MACON_LIB="$PROBE_LIB" MACON_STATE="$PROBE_STATE" MACON_RUN="$PROBE_RUN" \
+    sh "$REPO_DIR/libexec/macon-helper" "$HELPER_VERB" 2>&1 || :)
 case "$OUT" in
     *'usage: macon-helper {'*)
         assert_eq "accepted" "rejected" "and the helper accepts that verb" ;;
