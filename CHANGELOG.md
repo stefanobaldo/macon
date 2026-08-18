@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the lid twice a second and blanks the display whenever it finds one shut over
   a lit screen. An external display connected in clamshell mode is blanked with
   it; that case is untested on real hardware.
+- A session no longer ends when its helper does. The root helper now runs under
+  a `launchd` daemon, `local.macon.helper`, registered by `install.sh` and set
+  to restart the helper after an abnormal death but not after a clean one.
+  Killed mid-session, the helper is started again, reads the session back from
+  its own root-owned copy and carries on to the same deadline. Before this, a
+  helper that was killed left the Mac unable to sleep until the next macon
+  command noticed the orphan or the machine was rebooted.
 
 ### Added
 
@@ -32,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report template asks for this output, which previously could describe a
   problem without saying which macon had it.
 - `macon version` prints the copyright and licence alongside the version.
+- `macon status` reports the helper daemon: whether `launchd` has the job,
+  whether a process is running, and `launchd`'s own start count. The count is
+  printed raw rather than judged — a clean session sits at two, and every
+  respawn adds one.
+- `macon on` refuses to start a session unless `launchd` has the helper daemon
+  loaded, with no flag to override it; re-running `install.sh` registers it
+  again. `uninstall.sh` stops the daemon before removing anything and aborts if
+  `launchd` still has the job, rather than leaving a root job respawning a
+  program that is gone.
 
 ## [0.1.0]
 
