@@ -399,16 +399,117 @@ assert_contains "$(cat "$REPO_DIR/install.sh")" "local.macon.helper" \
     "install.sh knows the helper daemon's label"
 
 # Ordering, as a source-level claim rather than a behavioural one: registering a
-# job whose program is not on disk yet gives launchd ten seconds of crash loop
-# per attempt, and the installer has no way to notice.
-COPY_AT=$(grep -n 'libexec/macon/macon-helper' "$REPO_DIR/install.sh" | head -1 | cut -d: -f1)
-REG_AT=$(grep -n 'MACON_HELPER_PLIST' "$REPO_DIR/install.sh" | head -1 | cut -d: -f1)
-assert_ok "the helper is copied before its daemon is registered" \
+# job whose ProgramArguments are not on disk yet gives launchd ten seconds of
+# crash loop per attempt, and the installer has no way to notice.
+#
+# Both line numbers are CALL SITES, deliberately. An earlier version of this
+# compared the constant's definition against the cp inside install_files, which
+# measured where two pieces of text sit rather than what the installer does:
+# moving the registration above the re-entry that copies the components left it
+# green. These two lines are the ordering constraint itself -- the re-entry that
+# puts the components on disk, and the call that registers a job pointing at
+# them.
+COPY_AT=$(grep -n 'install.sh" --install-files' "$REPO_DIR/install.sh" |
+    head -1 | cut -d: -f1)
+# The $ is part of the pattern, not an expansion: it is what tells the call site
+# apart from the definition a few lines above it.
+# shellcheck disable=SC2016
+REG_AT=$(grep -n 'install_helper_daemon "\$MACON_PREFIX"' "$REPO_DIR/install.sh" |
+    head -1 | cut -d: -f1)
+assert_ok "the components are copied before the daemon is registered" \
     test "$COPY_AT" -lt "$REG_AT"
 
 # bootstrap over an already-loaded label fails with EIO (verified), so an
 # upgrade must unload first or it silently keeps the old registration.
 assert_contains "$(cat "$REPO_DIR/install.sh")" "bootout" \
     "an upgrade unloads the existing job before registering the new one"
+
+# --- the two copies of the daemon's identity agree --------------------------
+#
+# install.sh cannot source bin/macon, so both files carry the same two defaults.
+# Drift between them is invisible and expensive: install.sh would bootstrap one
+# label while the check that follows asks launchd about another, and a perfectly
+# good install would report itself failed. The plist path is pinned for the same
+# reason -- `macon off` boots the job out through the CLI's copy of it.
+helper_default() {
+    sed -n "s/^$2=\${$2:-\(.*\)}$/\1/p" "$1" | head -1
+}
+CLI_LABEL=$(helper_default "$REPO_DIR/bin/macon" MACON_HELPER_LABEL)
+CLI_PLIST=$(helper_default "$REPO_DIR/bin/macon" MACON_HELPER_PLIST)
+# Read before compared: two defaults that both failed to parse would be equal,
+# and this whole section would pass by measuring nothing.
+assert_eq "local.macon.helper" "$CLI_LABEL" "the CLI's default label parses"
+assert_contains "$CLI_PLIST" "/Library/LaunchDaemons/" \
+    "and so does its default plist path"
+assert_eq "$CLI_LABEL" "$(helper_default "$REPO_DIR/install.sh" MACON_HELPER_LABEL)" \
+    "install.sh registers the label the CLI asks launchd about"
+assert_eq "$CLI_PLIST" "$(helper_default "$REPO_DIR/install.sh" MACON_HELPER_PLIST)" \
+    "and writes the plist where the CLI expects it"
+
+# --- what install_helper_daemon actually runs -------------------------------
+#
+# The assertions above are claims about the source. This one runs the function,
+# behind a PATH shim in front of sudo and launchctl -- the same technique
+# tests/test_source_inert.sh uses, with one difference that matters: those shims
+# REFUSE, and these must succeed, or the function returns at its first sudo and
+# never reaches the bootstrap whose ordering is the point.
+#
+# Nothing real is touched. Every privileged step goes through sudo, and sudo is
+# a stub that records its arguments and returns 0 without executing them, so no
+# tee, chown, chmod or launchctl reaches the machine.
+
+HW="$MACON_STATE/helper-daemon"
+HSHIM="$HW/shim"
+HCALLS="$HW/calls"
+mkdir -p "$HSHIM" "$HW/prefix/bin"
+: > "$HCALLS"
+for _c in sudo launchctl; do
+    printf '#!/bin/sh\nprintf "%%s %%s\\n" "%s" "$*" >> "%s"\nexit 0\n' \
+        "$_c" "$HCALLS" > "$HSHIM/$_c"
+    chmod 755 "$HSHIM/$_c"
+done
+
+# The prefix's CLI, standing in for the one an install has just copied there.
+# install_helper_daemon calls it by absolute path, so nothing here depends on
+# the shimmed PATH.
+# shellcheck disable=SC2016  # "$1" is written into the stub, not expanded here
+printf '#!/bin/sh\nprintf "<plist>%%s</plist>\\n" "$1"\n' > "$HW/prefix/bin/macon"
+chmod 755 "$HW/prefix/bin/macon"
+
+# The shimmed PATH stays inside the subshell, here and in the positive control
+# below: escaping it would leave the rest of this file -- and teardown_state --
+# running against fakes.
+# shellcheck disable=SC2030,SC2031
+run_shimmed() ( PATH="$HSHIM:$PATH"; export PATH; "$@" )
+
+# shellcheck disable=SC2030,SC2031
+run_helper_daemon() (
+    PATH="$HSHIM:$PATH"
+    export PATH
+    MACON_HELPER_PLIST="$HW/local.macon.test.plist"
+    MACON_HELPER_LABEL=local.macon.test
+    install_helper_daemon "$HW/prefix"
+)
+
+# The recorder is proved to record before anything is read out of it: a shim
+# directory that was never reached would otherwise make the greps below fail for
+# a reason that has nothing to do with install_helper_daemon.
+assert_ok "the shim accepts a privileged command" run_shimmed sudo -n true
+assert_contains "$(cat "$HCALLS")" "sudo -n true" "and records it"
+: > "$HCALLS"
+
+assert_ok "install_helper_daemon runs to the end" run_helper_daemon
+CALLED=$(cat "$HCALLS")
+assert_contains "$CALLED" "bootout system/local.macon.test" \
+    "it boots the label out before registering it"
+assert_contains "$CALLED" "bootstrap system $HW/local.macon.test.plist" \
+    "and bootstraps the plist it just wrote"
+# The order is the assertion, not the presence: bootstrap over a label launchd
+# already has fails with EIO (verified), so a bootout that ran afterwards -- or
+# not at all -- leaves an upgrade running the old registration.
+BOOTOUT_AT=$(printf '%s\n' "$CALLED" | grep -n 'bootout' | head -1 | cut -d: -f1)
+BOOTSTRAP_AT=$(printf '%s\n' "$CALLED" | grep -n 'bootstrap' | head -1 | cut -d: -f1)
+assert_ok "the bootout comes first, which is what makes an upgrade take" \
+    test "$BOOTOUT_AT" -lt "$BOOTSTRAP_AT"
 
 teardown_state

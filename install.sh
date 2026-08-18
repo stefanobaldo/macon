@@ -319,8 +319,15 @@ install_files() {
 
 # Where the session helper's LaunchDaemon is registered, and the label launchd
 # knows it by. The same two values bin/macon defines, restated here because
-# install.sh does not source the CLI -- and overridable for the same reason,
-# so a test can name a job this machine does not have.
+# install.sh does not source the CLI; a test pins the two defaults together so
+# they cannot drift into registering one label and verifying another.
+#
+# Overridable, and they must be overridden ALONGSIDE the CLI's -- the same
+# pairing rule bin/macon states for MACON_FS_LOADED. The plist path only says
+# where the file goes; its contents, Label included, are rendered by
+# `macon __helper_plist`, so redirecting this alone writes the REAL label into a
+# temporary file and bootstraps it. Only a test that overrides both here and in
+# the CLI it calls is naming a job this machine does not have.
 #
 # Beside their only consumer rather than at the top of the file: the registration
 # below must come after the copy, and a definition up with MACON_PREFIX would
@@ -509,12 +516,22 @@ install_main() {
     # The result, not the attempt -- the same distinction the failsafe's check
     # makes, and for the same reason: the sudo tee inside a pipeline can fail
     # with the pipeline still exiting 0.
+    #
+    # The wording says only what is true in every mode this branch is reachable
+    # in. The plist may have been written and rejected, or never written at all
+    # -- launchd not having the job is the one fact common to both, and it is
+    # the fact `macon on` refuses on. And the fix named is re-running the
+    # installer: there is deliberately no `macon helper` verb to point at, so
+    # the failsafe's "retry with:" line has no counterpart here.
     if ! launchctl print "system/$MACON_HELPER_LABEL" >/dev/null 2>&1; then
         _rc=1
         _unregistered="${_unregistered:+$_unregistered and }the helper daemon"
-        printf 'macon: the helper daemon was written but launchd did not load it.\n' >&2
-        printf "macon: 'macon on' will refuse until it does. Check %s\n" \
-            "$MACON_HELPER_PLIST" >&2
+        printf 'macon: the helper daemon did NOT register.\n' >&2
+        printf "macon: launchd has no job '%s', and 'macon on' refuses without\n" \
+            "$MACON_HELPER_LABEL" >&2
+        printf 'macon: it -- no session can start until it is registered.\n' >&2
+        printf 'macon: re-run this installer to retry; the daemon belongs at\n' >&2
+        printf 'macon: %s\n' "$MACON_HELPER_PLIST" >&2
     fi
 
     install_prefix_note "$MACON_PREFIX"
