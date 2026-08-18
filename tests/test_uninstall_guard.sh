@@ -280,13 +280,21 @@ for _c in sudo rm pmset cp chown chmod ln mv; do
     chmod 755 "$USHIM/$_c"
 done
 
-# launchctl is recorded like the rest, but `print` answers 3 -- launchd's reply
-# for a label it does not have, which is what a bootout that worked leaves
-# behind. That selects the branch which has to stay silent.
-# shellcheck disable=SC2016  # "$*" and "$1" are written into the stub, not expanded here
-printf '#!/bin/sh\nprintf "launchctl %%s\\n" "$*" >> "%s"\ncase "${1:-}" in print) exit 3 ;; esac\nexit 0\n' \
-    "$UCALLS" > "$USHIM/launchctl"
-chmod 755 "$USHIM/launchctl"
+# launchctl is recorded like the rest, but its answer to `print` is a stub
+# parameter: that answer is what selects between the two branches this section
+# has to see -- the job is gone, and the job is still there.
+#
+# Verified codes, and they belong to different calls: `print` answers 113 for a
+# label launchd does not have, while 3 (ESRCH) is what `bootout` answers for the
+# same condition. The code under test only reads success versus failure, but a
+# wrong number in a comment here is a platform fact the next reader would trust.
+fake_launchctl() {
+    # shellcheck disable=SC2016  # "$*" and "$1" are written into the stub, not expanded here
+    printf '#!/bin/sh\nprintf "launchctl %%s\\n" "$*" >> "%s"\ncase "${1:-}" in print) exit %s ;; esac\nexit 0\n' \
+        "$UCALLS" "$1" > "$USHIM/launchctl"
+    chmod 755 "$USHIM/launchctl"
+}
+fake_launchctl 113
 
 # uninstall.sh reads the IORegistry directly and by design. A machine that
 # reports nothing is not a blocker (asserted above), which is what lets
@@ -323,28 +331,65 @@ assert_contains "$(cat "$UW/out")" "macon is uninstalled" \
     "and reaches the line that says so"
 
 CALLED=$(cat "$UCALLS")
-assert_contains "$CALLED" "bootout system/local.macon.test" \
-    "it boots the helper daemon out by label"
-assert_contains "$CALLED" "rm -f $UW/local.macon.helper.plist" \
+# `sudo`, spelled out. Every recorded line below could have come from either
+# stub, and the difference is not cosmetic: an unprivileged `launchctl bootout`
+# of a system-domain job fails with EPERM, which `2>/dev/null || :` swallows
+# whole -- the removal would do nothing and say nothing, and a bare
+# "bootout system/..." assertion would pass over it.
+assert_contains "$CALLED" "sudo launchctl bootout system/local.macon.test" \
+    "it boots the helper daemon out by label, as root"
+assert_contains "$CALLED" "sudo rm -f $UW/local.macon.helper.plist" \
     "and deletes the plist as well -- tidying up after the bootout, not instead"
 
 # The order is the assertion, not the presence. A bootout that ran after the
 # components were removed would leave a window in which launchd respawns a
 # program that is no longer on disk; one that ran after the plist was deleted
 # would still work, but only because bootout does not read the file.
-BOOTOUT_RUN=$(printf '%s\n' "$CALLED" | grep -n 'bootout system/local.macon.test' | head -1 | cut -d: -f1)
-PLIST_RM_RUN=$(printf '%s\n' "$CALLED" | grep -nF "rm -f $UW/local.macon.helper.plist" | head -1 | cut -d: -f1)
-COMP_RM_RUN=$(printf '%s\n' "$CALLED" | grep -n 'rm -rf .*libexec/macon' | head -1 | cut -d: -f1)
+BOOTOUT_RUN=$(printf '%s\n' "$CALLED" | grep -n 'sudo launchctl bootout system/local.macon.test' | head -1 | cut -d: -f1)
+PLIST_RM_RUN=$(printf '%s\n' "$CALLED" | grep -nF "sudo rm -f $UW/local.macon.helper.plist" | head -1 | cut -d: -f1)
+COMP_RM_RUN=$(printf '%s\n' "$CALLED" | grep -n 'sudo rm -rf .*libexec/macon' | head -1 | cut -d: -f1)
 assert_ok "the daemon is stopped before the program it runs is removed" \
     test "$BOOTOUT_RUN" -lt "$COMP_RM_RUN"
 assert_ok "and before its plist goes" \
     test "$BOOTOUT_RUN" -lt "$PLIST_RM_RUN"
 
-# launchd was asked whether the job really went, and said no such label. The
-# by-hand instructions are for the case where it is still there.
+# launchd was asked whether the job really went, and said no such label.
 assert_contains "$CALLED" "launchctl print system/local.macon.test" \
     "the uninstall checks the bootout actually took"
 assert_fail "and stays quiet when launchd no longer has the job" \
     grep -q "still loaded" "$UW/out"
+
+# --- and what it does when the daemon will not go ---------------------------
+#
+# The same run with launchd answering that it still has the label. This is the
+# branch the whole task exists for and the one nothing else can observe: the
+# message is the only signal the user gets, and the two things that must NOT
+# happen are invisible by nature.
+#
+# It aborts rather than warning and carrying on. Removing the components here
+# would leave a KeepAlive job -- ThrottleInterval 10 -- respawning a root
+# process every ten seconds against a program that is gone, for ever, with no
+# macon left to take it out. The boot failsafe is already removed at this point,
+# which fails closed: `macon on` refuses without it. The plist is kept, because
+# the by-hand instructions the abort prints need the file.
+
+: > "$UCALLS"
+fake_launchctl 0
+assert_fail "an uninstall whose helper daemon will not go stops, non-zero" \
+    run_uninstall_main
+STUCK=$(cat "$UW/out")
+assert_contains "$STUCK" "still loaded" "and says the daemon is still there"
+assert_contains "$STUCK" "sudo launchctl bootout system/local.macon.test" \
+    "naming the label, in the exact command that finishes the job by hand"
+
+STUCK_CALLS=$(cat "$UCALLS")
+assert_contains "$STUCK_CALLS" "sudo launchctl bootout system/local.macon.test" \
+    "the bootout was attempted before it gave up"
+assert_fail "the plist is NOT deleted -- the instructions above need the file" \
+    grep -qF "rm -f $UW/local.macon.helper.plist" "$UCALLS"
+assert_fail "and the components are NOT removed, so nothing crash-loops" \
+    grep -q "rm -rf .*libexec/macon" "$UCALLS"
+assert_fail "which is also what 'macon is uninstalled' must not claim" \
+    grep -q "macon is uninstalled" "$UW/out"
 
 teardown_state
