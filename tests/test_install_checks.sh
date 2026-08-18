@@ -204,12 +204,13 @@ assert_contains "$OUT" "usage:" "with the usage line"
 # --- a prefix whose parents are not root's ----------------------------------
 #
 # The chown the privileged half does covers the macon tree. It cannot cover the
-# directories ABOVE it, and that is where the boundary is: `macon on` starts
-# $PREFIX/libexec/macon/macon-helper with `sudo nohup`, so anything that can
-# write to a parent can swap that directory for its own and have its code run as
-# root the next time the user types their password. On a Homebrew Intel Mac
-# /usr/local is exactly that -- user-owned -- so this is the normal state of a
-# real machine rather than a hypothetical.
+# directories ABOVE it, and that is where the boundary is: the installer
+# registers a permanently loaded LaunchDaemon running
+# $PREFIX/libexec/macon/macon-helper as root, so anything that can write to a
+# parent can swap that directory for its own and then start its code as root
+# with `launchctl kickstart` -- no password, and nothing the user has to do. On
+# a Homebrew Intel Mac /usr/local is exactly that -- user-owned -- so this is
+# the normal state of a real machine rather than a hypothetical.
 
 assert_ok "a root-owned system directory is root-only" install_dir_is_root_only /usr
 assert_ok "and so are the ones this install mirrors" install_dir_is_root_only /usr/libexec
@@ -248,6 +249,13 @@ assert_eq "" "$(install_unsafe_dirs /usr)" \
 OUT=$(install_explain_unsafe_dirs "$UNSAFE" "$MACON_STATE/prefix-check" 2>&1)
 assert_contains "$OUT" "$MACON_STATE" "the refusal names the exact directory"
 assert_contains "$OUT" "as ROOT" "and states what runs from there with privilege"
+# The mechanism, not a generic scare. A user reading "the next time you type
+# your password" would conclude that not running `macon on` keeps them safe;
+# the loaded daemon means it does not, and the refusal has to say so.
+assert_contains "$OUT" "launchctl kickstart" \
+    "and names how that code gets to run: launchd, on demand"
+assert_contains "$OUT" "no password" \
+    "and that nothing gates it -- the warning no longer rests on a sudo prompt"
 assert_contains "$OUT" "MACON_PREFIX=" "and offers a prefix only root owns"
 assert_contains "$OUT" "--allow-unsafe-prefix" "and the override for someone who means it"
 assert_contains "$OUT" "Homebrew" "and says why an Intel Mac lands here"
