@@ -359,5 +359,60 @@ assert_eq "0" "$(fake_call_count 'launchd_bootstrap')" \
     "nothing was bootstrapped from a file that is not there"
 : > "$MACON_HELPER_PLIST"
 
+# --- status reports the daemon ----------------------------------------------
+#
+# `runs` is launchd's own start counter and the entire respawn diagnostic: macon
+# keeps none of its own, so a night in which the helper died forty times is
+# otherwise indistinguishable from a clean one.
+#
+# The row reports the number and does NOT interpret it. Measured on the real
+# machine, across the exact sequence macon produces: install.sh bootstraps and
+# the job runs once and exits 0 (runs=1); `macon on` kickstarts it (runs=2);
+# each crash adds one; `macon off` boots out and re-bootstraps, resetting it to
+# 1. A healthy session therefore sits at TWO, and any "greater than 1 means
+# trouble" threshold would fire every single night.
+
+fake_set launchd_local.macon.helper running
+fake_set launchd_runs_local.macon.helper 2
+assert_contains "$(cli_cmd_status)" "loaded, running (runs: 2)" \
+    "a healthy session reports launchd's count as it stands"
+
+fake_set launchd_runs_local.macon.helper 7
+assert_contains "$(cli_cmd_status)" "loaded, running (runs: 7)" \
+    "and a night with crashes reports the higher count, uninterpreted"
+
+fake_set launchd_local.macon.helper "not running"
+assert_contains "$(cli_cmd_status)" "loaded, idle" \
+    "a loaded job with no process reads as idle"
+
+# An unreadable count is simply absent -- the row must not invent a number, and
+# must not lose the half that IS load-bearing.
+rm -f "$MACON_STATE/fake/launchd_runs_local.macon.helper"
+fake_set launchd_local.macon.helper running
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "loaded, running" "an unreadable count still reports the state"
+case "$OUT" in
+    *"runs:"*) assert_eq "absent" "present" "no count is invented when none can be read" ;;
+    *) assert_eq "absent" "absent" "no count is invented when none can be read" ;;
+esac
+
+rm -f "$MACON_STATE/fake/launchd_local.macon.helper"
+assert_contains "$(cli_cmd_status)" "NOT LOADED" \
+    "an unloaded daemon is reported prominently"
+assert_contains "$(cli_cmd_status)" "'macon on' will refuse" \
+    "and the consequence is named, not left to be discovered"
+
+# An unparseable state degrades to the fact that IS load-bearing. The output of
+# `launchctl print` changes shape between macOS releases, so the row must not
+# depend on parsing it.
+fake_set launchd_local.macon.helper "some future wording"
+OUT=$(cli_cmd_status)
+assert_contains "$OUT" "helper daemon:" "an unknown state still produces a row"
+case "$OUT" in
+    *"NOT LOADED"*) assert_eq "loaded" "not loaded" \
+        "an unparseable state must not read as unloaded" ;;
+    *) assert_eq "loaded" "loaded" "an unparseable state still reads as loaded" ;;
+esac
+
 unset MACON_FAKE_NOW
 teardown_state
