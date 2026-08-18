@@ -374,12 +374,27 @@ assert_contains "$OUT" "MACON_LIB" "a non-default prefix names MACON_LIB"
 assert_contains "$OUT" "MACON_LIBEXEC" "and MACON_LIBEXEC"
 assert_contains "$OUT" "/opt/macon/libexec/macon/lib" "with the value to give it"
 
-# And says what those exports do NOT buy. Verified on this platform: sudo's
-# env_reset drops MACON_LIB before the root helper reads it, so `macon on`
-# under a non-default prefix cannot arm. A note that stopped at "export these
-# two" would be a reassurance rather than an instruction.
-assert_contains "$OUT" "sudo" "and names what still will not work"
-assert_contains "$OUT" "failsafe" "while saying the boot failsafe is unaffected"
+# And says where those exports are needed and where they are not. Both facts
+# are read off bin/macon: `macon on` restates the two paths through
+# /usr/bin/env on the far side of sudo -- which is what defeats env_reset --
+# and both LaunchDaemons name them in EnvironmentVariables. A non-default
+# prefix therefore arms a session like any other, and the one thing the user
+# has to get right is that the exports outlive the shell they typed them in.
+assert_contains "$OUT" "profile" "and says the exports must outlive one terminal"
+assert_contains "$OUT" "macon off" "naming the command that suffers if they do not"
+assert_contains "$OUT" "failsafe" "while saying what carries the paths on its own"
+
+# The claim that must not come back. It deterred a valid install for as long as
+# it stood, and the code it described has restated both paths across sudo since
+# before this note was written.
+case "$OUT" in
+    *"refuses to arm"* | *"only /usr/local"*)
+        assert_eq "supported" "refused" \
+            "the note must not claim a non-default prefix cannot start a session" ;;
+    *)
+        assert_eq "supported" "supported" \
+            "the note does not claim a non-default prefix cannot start a session" ;;
+esac
 
 # --- the failsafe registered, or it did not ---------------------------------
 #
