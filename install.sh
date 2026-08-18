@@ -353,11 +353,53 @@ install_helper_daemon() {
     # An upgrade over an existing install: bootstrapping a label launchd
     # already has fails with EIO, so unloading first is what makes this
     # idempotent rather than a no-op that silently keeps the old registration.
-    sudo launchctl bootout "system/$MACON_HELPER_LABEL" 2>/dev/null || :
+    #
+    # Two statuses are ordinary and the rest are not. 0 is "booted out"; 3 is
+    # ESRCH -- "No such process", verified as what launchctl answers about a
+    # label it does not have, which is every first install. Anything else means
+    # the old job may still be loaded, and `launchctl print` at the end of this
+    # installer cannot tell a fresh registration from a surviving one: it sees a
+    # job either way. So it is said here, where the number is still known, or it
+    # is never said at all.
+    _bo=0
+    sudo launchctl bootout "system/$MACON_HELPER_LABEL" 2>/dev/null || _bo=$?
+    if [ "$_bo" -ne 0 ] && [ "$_bo" -ne 3 ]; then
+        printf 'macon: could not unload the existing %s (launchctl exited %s).\n' \
+            "$MACON_HELPER_LABEL" "$_bo" >&2
+        printf 'macon: if this install reports the daemon registered, the job\n' >&2
+        printf 'macon: launchd is running may still be the OLD one. Take it out by\n' >&2
+        printf 'macon: hand and run this installer again:\n' >&2
+        printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
+    fi
 
-    MACON_LIB="$_p/libexec/macon/lib" \
-    MACON_LIBEXEC="$_p/libexec/macon" \
-        "$_p/bin/macon" __helper_plist | sudo tee "$MACON_HELPER_PLIST" >/dev/null || return 1
+    # Rendered and checked before anything privileged touches the real path.
+    #
+    # `macon __helper_plist | sudo tee "$MACON_HELPER_PLIST"` reports TEE's
+    # status, not the CLI's: a render that died still leaves the pipeline
+    # exiting 0 over an EMPTY root-owned plist. chown and chmod both succeed on
+    # it, bootstrap rejects it, and what stays on the machine is a file launchd
+    # fails to parse at every boot until someone reinstalls.
+    #
+    # The temporary file is the user's own, created 0600 by mktemp under a
+    # per-user TMPDIR on macOS, and it is copied rather than moved so the
+    # destination's ownership is root's from the start.
+    _tmp=$(mktemp "${TMPDIR:-/tmp}/macon-helper-plist.XXXXXX") || return 1
+    if ! MACON_LIB="$_p/libexec/macon/lib" \
+        MACON_LIBEXEC="$_p/libexec/macon" \
+        "$_p/bin/macon" __helper_plist > "$_tmp"; then
+        rm -f "$_tmp"
+        return 1
+    fi
+    if [ ! -s "$_tmp" ]; then
+        rm -f "$_tmp"
+        return 1
+    fi
+
+    if ! sudo cp "$_tmp" "$MACON_HELPER_PLIST"; then
+        rm -f "$_tmp"
+        return 1
+    fi
+    rm -f "$_tmp"
     sudo chown root:wheel "$MACON_HELPER_PLIST" || return 1
     sudo chmod 644 "$MACON_HELPER_PLIST" || return 1
     sudo launchctl bootstrap system "$MACON_HELPER_PLIST" || return 1
