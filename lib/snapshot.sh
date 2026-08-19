@@ -156,7 +156,7 @@ snap_restore() {
 # IS eight -- a knob answering a different question than the one it was asked,
 # and saying nothing -- and `099` is not valid octal at all, which makes the
 # arithmetic an error rather than a value. Bare `0` is a real request, and stays
-# one: it clears the directory, which lib/session.sh:104 preserves the same way.
+# one: it clears the directory, which lib/session.sh:105 preserves the same way.
 MACON_PMPREFS_KEEP_MAX_DIGITS=18
 MACON_PMPREFS_KEEP=${MACON_PMPREFS_KEEP:-10}
 if ! _snap_is_number "$MACON_PMPREFS_KEEP" ||
