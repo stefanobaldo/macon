@@ -108,4 +108,49 @@ backup_rc=$?
 assert_eq "1" "$backup_rc" "backup reports failure when no plist landed"
 assert_ok "the destination is still echoed on failure" test -n "$backup_dir"
 
+# --- the plist backups are bounded ------------------------------------------
+#
+# One directory per arm, forensic only, and nothing used to remove them: 48 in
+# three days on the verification machine. The retention keeps the newest, which
+# is what a by-hand recovery reads; the older ones matter only if the newest was
+# itself taken after something had already gone wrong.
+
+count_pmprefs() {
+    _n=0
+    for _d in "$MACON_STATE"/pmprefs-*; do
+        [ -d "$_d" ] || continue
+        _n=$((_n + 1))
+    done
+    printf '%s\n' "$_n"
+}
+
+# The block above left the fake scripted to write no plist at all, and left its
+# own backup directories behind. Both are reset here: this block counts the
+# directories, and it asserts on the rc a landed plist produces.
+fake_set pmprefs_files 1
+rm -rf "$MACON_STATE"/pmprefs-*
+
+MACON_PMPREFS_KEEP=3
+: > "$MACON_STATE/snapshot"
+for _s in 1 2 3 4 5; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-00000$_s"
+done
+
+NEW=$(snap_backup_plists)
+assert_eq "3" "$(count_pmprefs)" "the backups are pruned to the retention"
+assert_ok "the directory just created survives" test -d "$NEW"
+assert_ok "so does the newest of the older ones" \
+    test -d "$MACON_STATE/pmprefs-20260101-000005"
+assert_fail "the oldest is gone" \
+    test -d "$MACON_STATE/pmprefs-20260101-000001"
+assert_ok "the snapshot file is never a candidate" \
+    test -f "$MACON_STATE/snapshot"
+
+# Below the retention nothing is removed, and the backup still reports whether
+# a plist landed -- pruning must not change that verdict.
+rm -rf "$MACON_STATE"/pmprefs-*
+MACON_PMPREFS_KEEP=10
+assert_ok "a backup below the retention succeeds" snap_backup_plists
+assert_eq "1" "$(count_pmprefs)" "and nothing was pruned"
+
 teardown_state
