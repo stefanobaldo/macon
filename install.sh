@@ -5,12 +5,12 @@
 # Usage: sh install.sh [--force]   (as yourself -- NOT under sudo; see below)
 #        MACON_PREFIX=/opt/x sh install.sh
 #
-# It refuses while this Mac still looks like it is holding a session, for the
-# same reason uninstall.sh does and with the same three blockers: cp replaces
-# the running root helper in place, and a bash reading its script lazily can
-# take a syntax error or execute unintended bytes at its next read. The helper
-# dies with the power settings still applied, and nothing detects the orphan
-# until someone runs macon status, macon on, or reboots.
+# It refuses while this Mac is holding a session, for the same reason
+# uninstall.sh does and with the same three blockers: cp replaces the running
+# root helper in place, and a bash reading its script lazily can take a syntax
+# error or execute unintended bytes at its next read. The helper dies with the
+# power settings still applied, and nothing detects the orphan until someone
+# runs macon status, macon on, or reboots.
 #
 # Sourcing this file defines the functions and does nothing else -- see the
 # single statement at the very end -- which is what makes the checks testable
