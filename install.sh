@@ -384,22 +384,33 @@ install_helper_daemon() {
     # per-user TMPDIR on macOS, and it is copied rather than moved so the
     # destination's ownership is root's from the start.
     _tmp=$(mktemp "${TMPDIR:-/tmp}/macon-helper-plist.XXXXXX") || return 1
-    if ! MACON_LIB="$_p/libexec/macon/lib" \
-        MACON_LIBEXEC="$_p/libexec/macon" \
-        "$_p/bin/macon" __helper_plist > "$_tmp"; then
-        rm -f "$_tmp"
-        return 1
-    fi
-    if [ ! -s "$_tmp" ]; then
-        rm -f "$_tmp"
-        return 1
-    fi
 
-    if ! sudo cp "$_tmp" "$MACON_HELPER_PLIST"; then
-        rm -f "$_tmp"
-        return 1
-    fi
+    # A signal landing between the mktemp and the rm would otherwise leave that
+    # 0600 file behind, once per interrupted install. The three steps below
+    # share ONE cleanup point rather than returning early, so the trap is
+    # cleared again the moment it stops being needed and nothing global
+    # outlives this function.
+    trap 'rm -f "$_tmp"' EXIT HUP INT TERM
+
+    _ok=1
+    MACON_LIB="$_p/libexec/macon/lib" \
+        MACON_LIBEXEC="$_p/libexec/macon" \
+        "$_p/bin/macon" __helper_plist > "$_tmp" || _ok=0
+
+    # `plutil -lint` rather than a test for a non-empty file. Both catch a
+    # render that died before writing anything; only this catches one that died
+    # HALFWAY, and a half-written plist is the more likely of the two -- the
+    # renderer writes the envelope before the keys. Verified: it exits 1 on an
+    # empty file and on a truncated one, and 0 on the real thing. launchd's own
+    # answer to a plist it cannot parse is to not run the job, which is the
+    # failure this whole function exists to keep off the machine.
+    [ "$_ok" -eq 1 ] && { plutil -lint "$_tmp" > /dev/null 2>&1 || _ok=0; }
+    [ "$_ok" -eq 1 ] && { sudo cp "$_tmp" "$MACON_HELPER_PLIST" || _ok=0; }
+
     rm -f "$_tmp"
+    trap - EXIT HUP INT TERM
+    [ "$_ok" -eq 1 ] || return 1
+
     sudo chown root:wheel "$MACON_HELPER_PLIST" || return 1
     sudo chmod 644 "$MACON_HELPER_PLIST" || return 1
     sudo launchctl bootstrap system "$MACON_HELPER_PLIST" || return 1
@@ -563,7 +574,12 @@ install_main() {
     # install interrupted between the two leaves the invariant held and no
     # session startable, which is the right way round.
     printf 'registering the session helper daemon...\n'
-    install_helper_daemon "$MACON_PREFIX" || :
+    # Kept, not discarded. The check below is the authority on whether launchd
+    # has the job, and it is blind to exactly one combination: a registration
+    # that failed over a label that was already loaded. `launchctl print` sees a
+    # job either way, and only this status says the job it sees is the old one.
+    _hd=0
+    install_helper_daemon "$MACON_PREFIX" || _hd=$?
     # The result, not the attempt -- the same distinction the failsafe's check
     # makes, and for the same reason: the sudo tee inside a pipeline can fail
     # with the pipeline still exiting 0.
@@ -583,6 +599,18 @@ install_main() {
         printf 'macon: it -- no session can start until it is registered.\n' >&2
         printf 'macon: re-run this installer to retry; the daemon belongs at\n' >&2
         printf 'macon: %s\n' "$MACON_HELPER_PLIST" >&2
+    elif [ "$_hd" -ne 0 ]; then
+        # Registered, and not by this install. Silence here would be the worst
+        # of the three outcomes: the installer would report success and the job
+        # launchd runs tonight would be the previous version of the helper.
+        _rc=1
+        _unregistered="${_unregistered:+$_unregistered and }the helper daemon"
+        printf 'macon: registering the helper daemon failed (exited %s), but\n' "$_hd" >&2
+        printf "macon: launchd still has a job called '%s'. That job is the\n" \
+            "$MACON_HELPER_LABEL" >&2
+        printf 'macon: PREVIOUS registration, not this one. Take it out and\n' >&2
+        printf 'macon: re-run this installer:\n' >&2
+        printf 'macon:   sudo launchctl bootout system/%s\n' "$MACON_HELPER_LABEL" >&2
     fi
 
     install_prefix_note "$MACON_PREFIX"

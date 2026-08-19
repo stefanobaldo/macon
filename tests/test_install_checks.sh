@@ -509,8 +509,24 @@ chmod 755 "$HSHIM/sudo"
 # The prefix's CLI, standing in for the one an install has just copied there.
 # install_helper_daemon calls it by absolute path, so nothing here depends on
 # the shimmed PATH.
-# shellcheck disable=SC2016  # "$1" is written into the stub, not expanded here
-printf '#!/bin/sh\nprintf "<plist>%%s</plist>\\n" "$1"\n' > "$HW/prefix/bin/macon"
+#
+# It emits a real plist, not a marker, because install_helper_daemon runs
+# `plutil -lint` over what it rendered -- and plutil is not shimmed, so this
+# fixture is checked by the same tool the installer trusts. The verb it was
+# called with goes in as a string value, so the evidence survives inside a
+# document that parses.
+cat > "$HW/prefix/bin/macon" <<'STUB'
+#!/bin/sh
+cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Verb</key><string>$1</string>
+</dict>
+</plist>
+PLIST
+STUB
 chmod 755 "$HW/prefix/bin/macon"
 
 # The shimmed PATH stays inside the subshell, here and in the positive control
@@ -612,5 +628,19 @@ chmod 755 "$HW/prefix/bin/macon"
 assert_fail "an empty render fails the registration too" run_helper_daemon
 assert_fail "and installs nothing either" \
     grep -q "local.macon.test.plist" "$HCALLS"
+
+# And the case a non-empty test cannot see: exit 0 having written HALF a plist.
+# It is the likelier of the two failures, because the renderer emits the
+# envelope before the keys -- a CLI killed partway through leaves a document
+# that opens and never closes. launchd's answer to a plist it cannot parse is
+# to not run the job, silently, at every boot.
+: > "$HCALLS"
+printf '#!/bin/sh\nprintf "<?xml version=\\"1.0\\"?>\\n<plist version=\\"1.0\\">\\n<dict>\\n"\n' \
+    > "$HW/prefix/bin/macon"
+chmod 755 "$HW/prefix/bin/macon"
+assert_fail "a truncated render fails the registration" run_helper_daemon
+assert_fail "and no truncated plist reaches the install path" \
+    grep -q "local.macon.test.plist" "$HCALLS"
+assert_fail "and no job is bootstrapped over one" grep -q bootstrap "$HCALLS"
 
 teardown_state
