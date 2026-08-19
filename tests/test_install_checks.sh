@@ -172,6 +172,45 @@ printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >> "%s"\nexit 97\n' \
 chmod 755 "$GUARD/shim/sudo"
 printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$GUARD/state/snapshot"
 
+# And `ioreg`, because install.sh reads the IORegistry DIRECTLY -- it has to
+# answer "is this Mac holding a session" with nothing installed yet, so it
+# cannot go through lib/platform.sh and the suite's fake cannot reach it.
+#
+# Without this stub the cases below depend on whether the machine running them
+# happens to have a macon session armed: a real `SleepDisabled = Yes` trips the
+# installer's session guard, every run_installer refuses for a reason the case
+# is not about, and the assertions fail. It never showed on CI, which has no
+# session, and it showed the first time the suite was run on a maintainer's
+# machine mid-session. The stub reports the machine these cases describe -- not
+# armed -- and $SLEEP_DISABLED_STUB flips it for the ones that want the other
+# answer.
+SLEEP_DISABLED_STUB="$GUARD/sleep-disabled"
+printf 'no\n' > "$SLEEP_DISABLED_STUB"
+cat > "$GUARD/shim/ioreg" <<STUB
+#!/bin/sh
+if [ "\$(cat "$SLEEP_DISABLED_STUB")" = yes ]; then
+    printf '  |   "SleepDisabled" = Yes\n'
+fi
+exit 0
+STUB
+chmod 755 "$GUARD/shim/ioreg"
+
+# Proved in BOTH directions before anything is read through it. A stub that
+# answers "not armed" by never printing anything passes these cases for the
+# wrong reason and would go on passing if it were broken -- which the first
+# version of it was.
+#
+# The subshell is deliberate, for the same reason it is above: the shimmed PATH
+# must not outlive the call.
+# shellcheck disable=SC2030,SC2031
+guard_sleep_disabled() ( PATH="$GUARD/shim:$PATH"; export PATH; install_sleep_disabled )
+
+assert_fail "the guard's ioreg stub reports a machine that is not armed" \
+    guard_sleep_disabled
+printf 'yes\n' > "$SLEEP_DISABLED_STUB"
+assert_ok "and reports an armed one when told to" guard_sleep_disabled
+printf 'no\n' > "$SLEEP_DISABLED_STUB"
+
 # shellcheck disable=SC2030,SC2031
 run_installer() (
     PATH="$GUARD/shim:$PATH"
