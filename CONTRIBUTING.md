@@ -4,6 +4,34 @@ macon is developed by a single maintainer. Issues and questions are welcome.
 Large pull requests will probably be declined for now — open an issue first so
 we can talk before you write code.
 
+## Issues
+
+Open one when you hit something macon got wrong, or when you want it to do
+something it does not. There are two templates; pick the one that fits and
+delete whatever does not apply — they are a scaffold, not a form.
+
+A report is only as useful as it is reproducible. macon is verified on one
+machine, so the version, the chip, the exact command and the output of `macon
+status` are what decide whether a problem can be looked into at all. Paste
+them rather than describing them.
+
+Anything with a security impact does not go here. macon runs as root; report it
+privately through **Security → Report a vulnerability** on this repository, as
+`SECURITY.md` describes.
+
+What happens next: the maintainer reproduces it, labels it, and either accepts
+it or closes it saying why. An issue that touches the path restoring a Mac's
+ability to sleep — the power snapshot, the boot failsafe, the activation
+ladder, the poll order — carries the `safety` label and is read before anything
+else. Silence is not a verdict; if an issue goes quiet, say so on it.
+
+Not every change needs an issue first. Something found and fixed in the same
+sitting can go straight to a pull request. An issue earns its keep when the
+work is not happening now — that is what keeps it from being lost.
+
+When a pull request resolves an issue, its body says `Closes #N`, so the issue
+closes on merge and the two stay linked in the record.
+
 ## Ground rules
 
 - Everything in this repository is written in English.
