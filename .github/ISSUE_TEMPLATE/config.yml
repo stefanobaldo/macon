@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/stefanobaldo/macon/security/advisories/new
+    about: >-
+      macon runs as root. Report anything with a security impact privately
+      here, never in a public issue. The threat model is in SECURITY.md.
