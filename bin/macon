@@ -492,13 +492,42 @@ cli_arm() {
     # Step 3: tell launchd to start it. From here the daemon owns the process:
     # if it dies, KeepAlive brings it back and it resumes from the descriptor
     # installed above.
-    # The pid file goes too, like every failure below this point. `arm` writes
-    # none, so today this clears nothing -- but a kickstart that failed is a
-    # kickstart whose outcome is not known, and `watch` writes the pid before it
-    # does anything else. Leaving one behind would make sess_helper_alive report
-    # a session over a machine this branch has just restored, which is the one
-    # wrong answer that matters.
-    if ! plat_launchd_kickstart "$MACON_HELPER_LABEL"; then
+    #
+    # A RELOAD rather than a kickstart, and the reason was measured rather than
+    # assumed. `launchctl kickstart` on a loaded-but-idle job does not return
+    # once the request is queued: it BLOCKS until ThrottleInterval has elapsed
+    # since that job last started, then starts it and returns. Every path that
+    # starts the daemon arms that clock -- install.sh bootstraps it, and `macon
+    # off` re-registers it at the end of every session -- so `macon off`
+    # followed by `macon on`, the most natural sequence a user types, sat
+    # silently for the remainder of the window. Measured here: the wait is
+    # exactly ten seconds minus the time since the last start, to within 40ms,
+    # and zero once the window has passed.
+    #
+    # The throttle clock is per-LOAD, so booting the job out and bootstrapping
+    # it again resets it. Measured from the same position: kickstart 10.04s, a
+    # reload 30ms.
+    #
+    # It is also strictly more robust. On a job that is already running,
+    # kickstart is a documented no-op -- the ladder below would then wait for a
+    # helper that never starts and roll back with "no live helper appeared",
+    # naming the wrong cause. A reload starts one either way.
+    #
+    # The bootout's status is deliberately unchecked. The job was loaded a
+    # moment ago, when preflight asked, and 3/ESRCH -- the label is not loaded
+    # -- is an ordinary answer rather than a failure. What has to succeed is the
+    # bootstrap, and its failure leaves the job UNLOADED: the machine is still
+    # restored below, and the next `macon on` refuses and names `macon off` as
+    # the command that re-registers it.
+    #
+    # The pid file goes with the descriptor, like every failure below this
+    # point. `arm` writes none, so today this clears nothing -- but a start
+    # whose outcome is not known is one `watch` may still be reaching, and
+    # `watch` writes the pid before it does anything else. Leaving one behind
+    # would make sess_helper_alive report a session over a machine this branch
+    # has just restored, which is the one wrong answer that matters.
+    plat_launchd_bootout "$MACON_HELPER_LABEL" || :
+    if ! plat_launchd_bootstrap "$MACON_HELPER_LABEL" "$MACON_HELPER_PLIST"; then
         cli_rollback "the helper daemon could not be started"
         cli_remove_run_files "$(sess_desc_path)" "$(sess_pid_path)"
         return 1
@@ -604,6 +633,19 @@ cli_preflight() {
         # exactly what it fixes. Naming only the installer sends a user who
         # needs one command to fetch a tarball.
         macon_die "the macon helper daemon is not loaded; run 'macon off' to re-register it, or install.sh again if it is really gone -- 'macon on' cannot start a session with nothing supervising it"
+    fi
+
+    # And the plist, which is a SECOND fact and only became load-bearing when
+    # arming started reloading the job instead of kickstarting it. A loaded job
+    # outlives its plist file -- verified -- so a half-uninstalled machine
+    # answers "loaded" above and has nothing to bootstrap from. Kickstart did
+    # not care; a reload does.
+    #
+    # Refused here rather than discovered in cli_arm, because by then the power
+    # settings are applied and the answer is a rollback the user reads as a
+    # failure to start rather than as a macon that is half gone.
+    if [ ! -f "$MACON_HELPER_PLIST" ]; then
+        macon_die "the macon helper daemon is loaded but $MACON_HELPER_PLIST is gone; run install.sh again -- 'macon on' reloads the job from that file and cannot start a session without it"
     fi
 
     # Snapshotted on EVERY arm, not only when no snapshot exists.
@@ -879,17 +921,21 @@ cli_cmd_status() {
     #
     # `runs` is launchd's own start counter and the entire respawn diagnostic:
     # macon keeps none of its own. It is reported RAW, with no threshold, and
-    # that is a measurement rather than a preference. Across the sequence macon
-    # produces: install.sh bootstraps and the job runs once and exits 0
-    # (runs=1); `macon on` kickstarts it (runs=2); each crash adds one; `macon
-    # off` boots out and re-bootstraps, resetting it to 1. A healthy session
-    # therefore sits at TWO -- so "greater than 1 means something went wrong"
-    # would fire every night and teach the reader to ignore the one line that
-    # exists to tell them something went wrong.
+    # that is a measurement rather than a preference.
     #
-    # The baseline is stable only because `off` re-registers the job. A future
-    # change to the stop sequence would move it, which is why the number is
-    # printed rather than judged.
+    # Across the sequence macon produces: install.sh bootstraps and the job runs
+    # once and exits 0 (runs=1); `macon on` RELOADS the job, which resets the
+    # counter and starts it (runs=1 again); each crash adds one; `macon off`
+    # boots out and re-bootstraps, back to 1. A healthy session therefore sits
+    # at ONE, and a session showing more has been respawned -- which is exactly
+    # what this row exists to say.
+    #
+    # It read TWO until arming stopped kickstarting the job and started
+    # reloading it, and the baseline moved because the counter is launchd's and
+    # resets on load. That is the whole reason the number is printed rather than
+    # judged: a "greater than one means trouble" rule written against the old
+    # sequence would have fired every single night, and any rule written against
+    # this one is one stop-sequence change away from doing the same.
     if ! cli_helper_daemon_loaded; then
         _cli_row "helper daemon:" "NOT LOADED -- 'macon on' will refuse"
     else

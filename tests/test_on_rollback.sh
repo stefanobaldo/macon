@@ -376,31 +376,70 @@ assert_eq "1" "$(plat_pmset_read sleep)" "the timers came back"
 assert_fail "and the descriptor was not left behind for a kickstart to obey" \
     test -f "$(sess_desc_path)"
 
-# --- launchd refuses the kickstart ------------------------------------------
+# --- launchd refuses to start the job ---------------------------------------
 
 clean_machine
 MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
-fake_set fail_launchd_kickstart 1
+fake_set fail_launchd_bootstrap 1
 assert_fail "arming fails when the daemon cannot be started" cli_arm "$D"
 assert_fail "disablesleep was rolled back" plat_sleep_disabled
 assert_fail "and the descriptor is gone" test -f "$(sess_desc_path)"
 # The pid file too, like every rollback below this point. The real `arm` writes
 # none, so on a real machine there is usually nothing here to clear -- but a
-# kickstart that failed is a kickstart whose outcome is not known, and `watch`
-# writes the pid before it does anything else.
+# start whose outcome is not known is one `watch` may still be reaching, and
+# `watch` writes the pid before it does anything else.
 assert_fail "and the pid file with it" test -f "$(sess_pid_path)"
 assert_fail "so nothing reports a live helper over a machine just restored" \
     sess_helper_alive
-fake_set fail_launchd_kickstart 0
+fake_set fail_launchd_bootstrap 0
+
+# A bootout that fails must NOT fail the arm. The job may already be unloaded --
+# 3/ESRCH is an ordinary answer, not a fault -- and the bootstrap that follows
+# is what actually has to work. Refusing here would turn a machine whose daemon
+# someone had already unloaded into one that cannot arm at all.
+clean_machine
+MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
+fake_set fail_launchd_bootout 1
+assert_ok "a bootout that fails does not fail the arm" cli_arm "$D"
+assert_ok "the helper is alive all the same" sess_helper_alive
+fake_set fail_launchd_bootout 0
+kill_stub
 
 # --- the happy path goes through launchd ------------------------------------
+#
+# A RELOAD, not a kickstart, and the order is the assertion. `launchctl
+# kickstart` on a loaded-but-idle job blocks until ThrottleInterval has elapsed
+# since that job last started -- measured at ten seconds minus the time since
+# the last start -- and every `macon off` re-registers the daemon, so `off`
+# then `on` sat silently for the remainder of the window. The throttle clock is
+# per-load, so booting out and bootstrapping again resets it: 10.04s against
+# 30ms from the same position.
+#
+# Pinned by ORDER rather than by presence, the same way `off`'s stop sequence
+# is: a bootstrap that ran before the bootout would unload the job it had just
+# started, leaving nothing running and the ladder rolling back.
 
 clean_machine
 MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
 fake_reset_calls
 assert_ok "arming succeeds" cli_arm "$D"
-assert_contains "$(fake_calls)" "launchd_kickstart local.macon.helper" \
-    "the helper is started by kickstarting the daemon, not by forking"
+CALLS=$(fake_calls)
+assert_contains "$CALLS" "launchd_bootout local.macon.helper" \
+    "the helper is started by reloading the daemon, not by forking"
+assert_contains "$CALLS" "launchd_bootstrap local.macon.helper" \
+    "and the bootstrap names the label it registers"
+case "$CALLS" in
+    *launchd_kickstart*)
+        assert_eq "reload" "kickstart" \
+            "arming must not kickstart -- that is the call that waits out the throttle" ;;
+    *)
+        assert_eq "reload" "reload" \
+            "and it is not a kickstart, which would wait out the throttle" ;;
+esac
+OUT_AT=$(printf '%s\n' "$CALLS" | grep -n 'launchd_bootout' | head -1 | cut -d: -f1)
+IN_AT=$(printf '%s\n' "$CALLS" | grep -n 'launchd_bootstrap' | head -1 | cut -d: -f1)
+assert_ok "the bootout comes first, which is what resets the throttle" \
+    test "$OUT_AT" -lt "$IN_AT"
 assert_ok "the helper is alive by name" sess_helper_alive
 kill_stub
 
