@@ -5,7 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Nothing has been distributed yet. `0.1.0-rc.N` is the code the maintainer runs
+overnight while the first release is being qualified in the field; `0.1.0` is
+cut when it has been, and is the first version anyone else is meant to install.
+
 ## [Unreleased]
+
+## [0.1.0-rc.2] - 2026-08-19
 
 ### Fixed
 
@@ -71,10 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plain positive number falls back to the default, quietly — this runs in the
   middle of an arm, and a mistyped knob is no reason to abort a session.
 
-## [0.1.0]
+## [0.1.0-rc.1] - 2026-08-16
 
-First release. Keeps a Mac awake with the lid closed and restores the original
-power configuration under every failure mode it can be put through.
+The first complete version. Keeps a Mac awake with the lid closed and restores
+the original power configuration under every failure mode it can be put through.
 
 ### Added
 

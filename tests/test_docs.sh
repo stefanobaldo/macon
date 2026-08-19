@@ -149,10 +149,17 @@ assert_ok "SECURITY.md states the unprivileged kickstart plainly" \
 assert_ok "and what bounds it" \
     says "$SECURITY" "exits 0 having applied nothing"
 
-# The changelog has to describe the release, not still be the empty heading
-# Task 1 created.
+# The changelog has to name the version the CLI reports, not a version someone
+# remembered to write down once. Cutting a release without a changelog section
+# is the failure this catches, and it is silent everywhere else.
 CHANGELOG="$REPO_DIR/CHANGELOG.md"
-assert_ok "the changelog names a version" grep -qE '^## \[?0\.1\.0' "$CHANGELOG"
+CLI_VERSION=$(sed -n 's/^MACON_VERSION=//p' "$REPO_DIR/bin/macon")
+assert_ok "the CLI reports a version" test -n "$CLI_VERSION"
+# Matched literally, brackets included. A regex on the bare version would let
+# 0.1.0 match the [0.1.0-rc.1] heading -- a false pass at exactly the moment the
+# first real release is cut.
+assert_ok "the changelog names the version the CLI reports" \
+    grep -qF "## [$CLI_VERSION]" "$CHANGELOG"
 # And the unreleased section has to carry the change of the moment: a session
 # that survives its helper being killed is the user-visible half of the whole
 # supervision work, and a changelog that omits it describes a different tool.
