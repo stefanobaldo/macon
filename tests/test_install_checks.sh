@@ -128,12 +128,14 @@ assert_contains "$OUT" "--force" "and names the override for someone who means i
 assert_contains "$OUT" "in place" "and says what the copy would do to the running helper"
 rm -f "$MACON_RUN/helper.pid"
 
-assert_fail "with nothing saved there is no snapshot to worry about" \
-    install_snapshot_present
-: > "$MACON_STATE/snapshot"
-assert_ok "a snapshot on disk is detected" install_snapshot_present
-assert_contains "$(install_blockers)" "snapshot" "and blocks the install"
-rm -f "$MACON_STATE/snapshot"
+assert_fail "an empty run directory holds no descriptor" \
+    install_descriptor_present
+: > "$MACON_RUN/session.conf"
+assert_ok "a session descriptor is detected" install_descriptor_present
+assert_contains "$(install_blockers)" "descriptor" "and blocks the install"
+OUT=$(install_explain_blockers "$(install_blockers)" 2>&1)
+assert_contains "$OUT" "session.conf" "the refusal names the descriptor it found"
+rm -f "$MACON_RUN/session.conf"
 
 # install.sh calls ioreg directly and by design -- it has to answer this with
 # nothing installed yet -- so a PATH shim tests the real seam.
@@ -153,11 +155,22 @@ fake_ioreg() {
 fake_ioreg 'printf "    | {\n    |   \"SleepDisabled\" = Yes\n    | }\n"'
 assert_ok "SleepDisabled = Yes is detected" sleep_disabled_via_shim
 assert_contains "$(blockers_via_shim)" "sleep-disabled" \
-    "and blocks the install on its own, with no session and no snapshot"
+    "and blocks the install on its own, with no session and no descriptor"
 fake_ioreg 'printf "    | {\n    |   \"SleepDisabled\" = No\n    | }\n"'
 assert_fail "SleepDisabled = No is not a blocker" sleep_disabled_via_shim
 fake_ioreg 'exit 0'
 assert_fail "a machine that reports nothing is not a blocker" sleep_disabled_via_shim
+
+# Issue #10. A snapshot outlives every session that ends by itself, which is the
+# ordinary way a session ends: the deadline path restores and leaves it behind
+# deliberately. It is not evidence of a live helper, so it must not block. This
+# runs behind the ioreg shim on purpose -- a machine that really is armed while
+# the suite runs would otherwise decide the case.
+fake_ioreg 'exit 0'
+: > "$MACON_STATE/snapshot"
+assert_eq "" "$(blockers_via_shim)" \
+    "a snapshot left by a finished session blocks nothing on its own"
+rm -f "$MACON_STATE/snapshot"
 rm -f "$SHIM/ioreg"
 
 # The refusal has to be WIRED IN, and the main block is the one part sourcing
@@ -170,7 +183,11 @@ mkdir -p "$GUARD/shim" "$GUARD/run" "$GUARD/state" "$GUARD/prefix"
 printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >> "%s"\nexit 97\n' \
     "$GUARD/sudo-calls" > "$GUARD/shim/sudo"
 chmod 755 "$GUARD/shim/sudo"
-printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$GUARD/state/snapshot"
+# The blocker the cases below are run against: a session descriptor, which is
+# on disk from the arm until the session ends. A snapshot is deliberately not
+# used here -- one is left behind by every session that ended, so an installer
+# that refused over it would refuse on a machine holding nothing.
+printf 'session_id=guard\n' > "$GUARD/run/session.conf"
 
 # And `ioreg`, because install.sh reads the IORegistry DIRECTLY -- it has to
 # answer "is this Mac holding a session" with nothing installed yet, so it
@@ -223,8 +240,13 @@ run_installer() (
 : > "$GUARD/sudo-calls"
 _rc=0
 OUT=$(run_installer) || _rc=$?
-assert_eq "1" "$_rc" "the installer refuses over a machine that looks modified"
-assert_contains "$OUT" "refusing to install" "and says so"
+assert_eq "1" "$_rc" "the installer refuses over a machine that is holding a session"
+# The whole header, not just "refusing to install": the prefix guard below
+# refuses with those same three words, and this case sits under a prefix this
+# user owns -- so a session guard that stopped blocking would still exit 1,
+# still print "refusing to install", and pass for the wrong reason.
+assert_contains "$OUT" "refusing to install -- this Mac is holding a session" \
+    "and says which refusal it is"
 assert_eq "" "$(cat "$GUARD/sudo-calls")" "without asking for a password first"
 
 # The prefix here is under a temporary directory this user owns, so it is also
@@ -301,7 +323,7 @@ assert_contains "$OUT" "Homebrew" "and says why an Intel Mac lands here"
 
 # Wired in, like the session guard: sourcing cannot reach the main block.
 : > "$GUARD/sudo-calls"
-rm -f "$GUARD/state/snapshot"
+rm -f "$GUARD/run/session.conf"
 _rc=0
 OUT=$(run_installer) || _rc=$?
 assert_eq "1" "$_rc" "the installer refuses a prefix root does not own"

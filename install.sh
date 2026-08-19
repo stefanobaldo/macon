@@ -140,10 +140,16 @@ install_helper_alive() {
     ps -p "$_pid" -o pid= >/dev/null 2>&1
 }
 
-# A snapshot exists only between `macon on` and a successful `macon off`. Its
-# presence means the machine still holds values macon changed.
-install_snapshot_present() {
-    [ -f "$(install_state_dir)/snapshot" ]
+# A session descriptor exists from the moment `macon on` hands one to the root
+# helper until the session ends. It is the signal the pid file cannot give:
+# between the snapshot and `pmset disablesleep 1` there is no helper pid and no
+# IORegistry bit, but the descriptor is already on disk.
+#
+# The power snapshot is deliberately NOT a blocker. It outlives every session
+# that ends by itself -- the deadline path and the orphan heal both restore and
+# leave it behind -- so its presence says nothing about whether one is running.
+install_descriptor_present() {
+    [ -f "$(install_run_dir)/session.conf" ]
 }
 
 # Read straight from the IORegistry: SleepDisabled is the one bit that decides
@@ -159,12 +165,12 @@ install_blockers() {
     _b=""
     install_helper_alive && _b="$_b session"
     install_sleep_disabled && _b="$_b sleep-disabled"
-    install_snapshot_present && _b="$_b snapshot"
+    install_descriptor_present && _b="$_b descriptor"
     printf '%s\n' "${_b# }"
 }
 
 install_explain_blockers() {
-    printf 'macon: refusing to install -- this Mac looks like it is holding a session:\n' >&2
+    printf 'macon: refusing to install -- this Mac is holding a session:\n' >&2
     # Intentionally unquoted: $1 is the word list install_blockers built.
     # shellcheck disable=SC2086
     for _r in $1; do
@@ -176,9 +182,9 @@ install_explain_blockers() {
             sleep-disabled)
                 printf '  - clamshell sleep is DISABLED right now\n' >&2
                 ;;
-            snapshot)
-                printf '  - the power snapshot is still on disk: %s/snapshot\n' \
-                    "$(install_state_dir)" >&2
+            descriptor)
+                printf '  - a session descriptor is present: %s/session.conf\n' \
+                    "$(install_run_dir)" >&2
                 ;;
         esac
     done
