@@ -20,10 +20,12 @@ export MACON_CLI_SOURCED
 . "$REPO_DIR/bin/macon"
 
 MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
-# Paired with the line above: without it cli_failsafe_loaded asks the real
-# launchd about the real daemon, and these assertions would then depend on
-# whether this machine happens to have macon installed.
-MACON_FS_LOADED=yes
+# And the job itself scripted as loaded, the same way the helper daemon is
+# below. cli_failsafe_loaded asks plat_launchd_loaded and nothing else, so an
+# unscripted label is simply not loaded -- and every arm in this file would
+# then refuse before touching anything, which is a correct refusal and the
+# wrong test.
+fake_set "launchd_$MACON_FS_LABEL" "not running"
 : > "$MACON_FS_PLIST"
 
 # The session helper's daemon, redirected for the same reason: `off`

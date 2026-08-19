@@ -326,8 +326,8 @@ install_files() {
 # install.sh does not source the CLI; a test pins the two defaults together so
 # they cannot drift into registering one label and verifying another.
 #
-# Overridable, and they must be overridden ALONGSIDE the CLI's -- the same
-# pairing rule bin/macon states for MACON_FS_LOADED. The plist path only says
+# Overridable, and they must be overridden ALONGSIDE the CLI's -- this
+# installer really does register with launchd. The plist path only says
 # where the file goes; its contents, Label included, are rendered by
 # `macon __helper_plist`, so redirecting this alone writes the REAL label into a
 # temporary file and bootstraps it. Only a test that overrides both here and in

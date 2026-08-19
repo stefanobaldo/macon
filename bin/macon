@@ -289,20 +289,19 @@ MACON_FS_LABEL=${MACON_FS_LABEL:-local.macon.failsafe}
 # It is still not proof the job would DO anything -- a loaded job can point at a
 # program that exits immediately. It is strictly more than the file check was.
 #
-# Overridable for the same reason MACON_FS_PLIST is, and it must be set
-# alongside it: a test that redirects the plist to a temporary file but leaves
-# this alone is asking the real launchd about the real daemon, so it passes or
-# fails according to whether the machine running it happens to have macon
-# installed. `yes` and `no` describe a machine the suite is not running on;
-# anything else asks launchd.
-MACON_FS_LOADED=${MACON_FS_LOADED:-launchd}
-
+# One mechanism, not two. This used to carry a MACON_FS_LOADED=yes|no|launchd
+# override of its own, from when the question was answered here rather than by
+# the platform layer -- a test that wanted a loaded failsafe said `yes`, while a
+# test that wanted a loaded HELPER daemon scripted the fake. Two dialects for
+# one question, and the spec asks for the override to fold into the mechanism.
+#
+# There is nothing left for it to do. Every answer now comes from
+# plat_launchd_loaded, and the suite replaces lib/platform.sh wholesale, so a
+# test can no longer reach the real launchd by forgetting to set something: it
+# scripts the label it is asking about, exactly as it does for the helper
+# daemon, and an unscripted label is simply not loaded.
 cli_failsafe_loaded() {
-    case "$MACON_FS_LOADED" in
-        yes) return 0 ;;
-        no) return 1 ;;
-        *) plat_launchd_loaded "$MACON_FS_LABEL" ;;
-    esac
+    plat_launchd_loaded "$MACON_FS_LABEL"
 }
 
 # Where the session helper's LaunchDaemon is registered, and the label launchd

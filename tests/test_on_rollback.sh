@@ -26,10 +26,12 @@ MACON_ARM_TRIES=3
 
 # Nothing in this file may touch the real LaunchDaemon path.
 MACON_FS_PLIST="$MACON_STATE/local.macon.failsafe.plist"
-# Paired with the line above: without it cli_failsafe_loaded asks the real
-# launchd about the real daemon, and these assertions would then depend on
-# whether this machine happens to have macon installed.
-MACON_FS_LOADED=yes
+# And the job itself scripted as loaded, the same way the helper daemon is
+# below. cli_failsafe_loaded asks plat_launchd_loaded and nothing else, so an
+# unscripted label is simply not loaded -- and every arm in this file would
+# then refuse before touching anything, which is a correct refusal and the
+# wrong test.
+fake_set "launchd_$MACON_FS_LABEL" "not running"
 : > "$MACON_FS_PLIST"
 
 # The helper daemon, scripted as loaded. Without it every cli_arm below would
@@ -209,12 +211,12 @@ assert_eq "0" "$(fake_call_count 'pmset')" "the failsafe refusal touched nothing
 # start, a false pass costs a Mac that reboots after a panic still unable to
 # sleep.
 clean_machine
-MACON_FS_LOADED=no
+fake_set "launchd_$MACON_FS_LABEL" ""
 assert_fail "on refuses when launchd has not loaded the failsafe" try_on 8
 assert_eq "0" "$(fake_call_count 'pmset')" "that refusal touched nothing either"
 assert_ok "--no-failsafe still overrides it" try_on 8 --no-failsafe
 kill_stub
-MACON_FS_LOADED=yes
+fake_set "launchd_$MACON_FS_LABEL" "not running"
 
 # --- the snapshot is taken fresh on every arm --------------------------------
 #

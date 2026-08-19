@@ -142,13 +142,13 @@ assert_eq "/opt/macon-libexec" \
 # --- status -----------------------------------------------------------------
 
 rm -f "$MACON_FS_PLIST"
-MACON_FS_LOADED=no
+fake_set "launchd_$MACON_FS_LABEL" ""
 OUT=$(cli_cmd_failsafe status); RC=$?
 assert_contains "$OUT" "absent" "status reports an uninstalled failsafe"
 assert_eq "1" "$RC" "and reports it as a failure"
 
 : > "$MACON_FS_PLIST"
-MACON_FS_LOADED=yes
+fake_set "launchd_$MACON_FS_LABEL" "not running"
 OUT=$(cli_cmd_failsafe status); RC=$?
 assert_contains "$OUT" "installed" "status reports an installed failsafe"
 assert_contains "$OUT" "$MACON_FS_PLIST" "and names the file"
@@ -158,7 +158,7 @@ assert_eq "0" "$RC" "and exits zero for the one healthy state"
 # plist is present, parses, and launchd has never been told about it. It used to
 # be reported as a healthy install, which is what let a machine believe it had a
 # boot restore it did not have.
-MACON_FS_LOADED=no
+fake_set "launchd_$MACON_FS_LABEL" ""
 OUT=$(cli_cmd_failsafe status); RC=$?
 assert_contains "$OUT" "NOT LOADED" "a plist launchd has not loaded is not 'installed'"
 assert_eq "1" "$RC" "and it is a failure rather than a variant of success"
@@ -167,7 +167,7 @@ assert_eq "1" "$RC" "and it is a failure rather than a variant of success"
 assert_fail "the installer's own test does not accept it" \
     sh -c "case \"$OUT\" in installed*) exit 0 ;; esac; exit 1"
 
-MACON_FS_LOADED=yes
+fake_set "launchd_$MACON_FS_LABEL" "not running"
 # The verb defaults to the one that changes nothing.
 OUT=$(cli_cmd_failsafe)
 assert_contains "$OUT" "installed" "no verb means status"
