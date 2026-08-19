@@ -150,7 +150,35 @@ assert_ok "the snapshot file is never a candidate" \
 # a plist landed -- pruning must not change that verdict.
 rm -rf "$MACON_STATE"/pmprefs-*
 MACON_PMPREFS_KEEP=10
-assert_ok "a backup below the retention succeeds" snap_backup_plists
+backup_dir=$(snap_backup_plists)
+backup_rc=$?
+assert_eq "0" "$backup_rc" "a backup below the retention succeeds"
 assert_eq "1" "$(count_pmprefs)" "and nothing was pruned"
+
+# The retention arrives from the environment and is a count this module deletes
+# by, so a value that is not a number must land on the default -- never on the
+# zero that unvalidated arithmetic would make it, which would delete the whole
+# forensic history. The guard runs where the constant is established, so the
+# module is re-sourced here the way a real run reads its environment.
+MACON_PMPREFS_KEEP=""
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "10" "$MACON_PMPREFS_KEEP" "an empty retention falls back to the default"
+
+MACON_PMPREFS_KEEP=ten
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "10" "$MACON_PMPREFS_KEEP" "and so does one that is not a number"
+
+rm -rf "$MACON_STATE"/pmprefs-*
+for _s in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-0000$_s"
+done
+NEW=$(snap_backup_plists)
+assert_eq "10" "$(count_pmprefs)" \
+    "a non-numeric retention prunes to the default rather than deleting them all"
+assert_ok "the directory just created survives it" test -d "$NEW"
+assert_ok "so does the newest of the older ones" \
+    test -d "$MACON_STATE/pmprefs-20260101-000012"
 
 teardown_state
