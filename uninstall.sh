@@ -79,10 +79,15 @@ uninstall_helper_alive() {
 }
 
 # A session descriptor exists from the moment `macon on` hands one to the root
-# helper until the session ends. The power snapshot is deliberately NOT a
-# blocker: it outlives every session that ends by itself, and it is the only
-# record of the original values, since macOS exposes no power defaults to
-# reconstruct them from -- which is a reason to keep it, not to refuse over it.
+# helper until the session ends. It brackets a session more tightly than the
+# pid file at both ends: it is on disk before launchd is asked to start the
+# helper, and it is unlinked only after the restore has run -- so a descriptor
+# still present means an ending that did not complete.
+#
+# The power snapshot is deliberately NOT a blocker: it outlives every session
+# that ends by itself, and it is the only record of the original values, since
+# macOS exposes no power defaults to reconstruct them from -- which is a reason
+# to keep it, not to refuse over it.
 uninstall_descriptor_present() {
     [ -f "$(uninstall_run_dir)/session.conf" ]
 }
