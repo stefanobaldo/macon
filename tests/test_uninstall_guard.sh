@@ -44,25 +44,23 @@ OUT=$(uninstall_blockers)
 assert_contains "$OUT" "session" "and it blocks the uninstall"
 rm -f "$MACON_RUN/helper.pid"
 
-# --- a snapshot still on disk -----------------------------------------------
+# --- a session descriptor ---------------------------------------------------
 #
-# A snapshot exists only between `macon on` and `macon off`. Its presence means
-# the machine still holds values macon changed -- and the snapshot is the ONLY
-# record of what they were before, since macOS exposes no power defaults.
+# The descriptor is on disk from the moment `macon on` hands one to the root
+# helper until the session ends, which covers the window the pid file cannot:
+# between the snapshot and `pmset disablesleep 1` there is no helper pid and no
+# IORegistry bit, but the descriptor is already there.
 
-assert_fail "with nothing saved there is no snapshot to worry about" \
-    uninstall_snapshot_present
-: > "$MACON_STATE/snapshot"
-assert_ok "a snapshot on disk is detected" uninstall_snapshot_present
-
-OUT=$(uninstall_blockers)
-assert_contains "$OUT" "snapshot" "and blocks the uninstall"
-
+assert_fail "an empty run directory holds no descriptor" \
+    uninstall_descriptor_present
+: > "$MACON_RUN/session.conf"
+assert_ok "a session descriptor is detected" uninstall_descriptor_present
+assert_contains "$(uninstall_blockers)" "descriptor" "and blocks the uninstall"
 OUT=$(uninstall_explain_blockers "$(uninstall_blockers)" 2>&1)
+assert_contains "$OUT" "session.conf" "the refusal names the descriptor it found"
 assert_contains "$OUT" "macon off" "the refusal points at the command that fixes it"
 assert_contains "$OUT" "--force" "and names the override for someone who means it"
-assert_contains "$OUT" "$MACON_STATE/snapshot" "and the file it found"
-rm -f "$MACON_STATE/snapshot"
+rm -f "$MACON_RUN/session.conf"
 
 # --- sleep still disabled ---------------------------------------------------
 #
@@ -89,7 +87,7 @@ fake_ioreg() {
 fake_ioreg 'printf "    | {\n    |   \"SleepDisabled\" = Yes\n    | }\n"'
 assert_ok "SleepDisabled = Yes is detected" sleep_disabled_via_shim
 assert_contains "$(blockers_via_shim)" "sleep-disabled" \
-    "and blocks the uninstall on its own, with no snapshot and no session"
+    "and blocks the uninstall on its own, with no descriptor and no session"
 assert_contains "$(uninstall_explain_blockers "$(blockers_via_shim)" 2>&1)" \
     "DISABLED" "and the refusal says the lid is the problem"
 
@@ -102,13 +100,24 @@ assert_fail "a machine that reports nothing is not a blocker" sleep_disabled_via
 fake_ioreg 'printf "unrelated output\n"; exit 1'
 assert_fail "and neither is an ioreg that fails" sleep_disabled_via_shim
 
+# Same reasoning as install.sh: a leftover snapshot is not a session. Removing
+# macon over one is safe, and refusing sent the user to `macon off` on a machine
+# with nothing to turn off. Run behind the ioreg shim on purpose -- a machine
+# that really is armed while the suite runs would otherwise decide the case.
+fake_ioreg 'exit 0'
+: > "$MACON_STATE/snapshot"
+assert_eq "" "$(blockers_via_shim)" \
+    "a snapshot left by a finished session blocks nothing on its own"
+rm -f "$MACON_STATE/snapshot"
+
 rm -f "$SHIM/ioreg"
 
 # --- refusing to run as root ------------------------------------------------
 #
-# Not symmetry with install.sh: under sudo, HOME is root's, so the snapshot
-# check above would look in a directory that never holds one and report the
-# machine as safe to strand.
+# Not symmetry with install.sh: under sudo, HOME is root's, so every path this
+# script prints out of the state directory -- the --force recovery line and the
+# closing note -- would name a directory that never held the snapshot the user
+# has to reapply by hand.
 
 assert_ok "an unprivileged uninstall is allowed" uninstall_check_not_root 501
 assert_fail "uninstalling as root is refused" uninstall_check_not_root 0
@@ -155,11 +164,11 @@ rm -f "$MACON_FS_PLIST"
 
 # --- handing --force on to the verb that does the removal -------------------
 #
-# `macon failsafe remove` refuses while this Mac still looks like it is holding
-# a session -- the same three blockers this script checks. uninstall.sh --force
-# reaches that verb with those blockers deliberately present, having already
-# told the user it is going ahead, so the decision has to travel with the call:
-# without the passthrough the --force path stops at the verb it invokes.
+# `macon failsafe remove` refuses on blockers of its own while this Mac may be
+# left unable to sleep. uninstall.sh --force reaches that verb with those
+# blockers deliberately present, having already told the user it is going ahead,
+# so the decision has to travel with the call: without the passthrough the
+# --force path stops at the verb it invokes.
 
 FS_PREFIX="$MACON_STATE/fs-prefix"
 FS_ARGS="$MACON_STATE/fs-args"
@@ -202,7 +211,7 @@ assert_ok "and it is still there" test -d "$MACON_STATE"
 # session running -- which is the state where refusing is correct.
 
 assert_fail "no pid file, no session blocker" uninstall_helper_alive
-assert_fail "no snapshot, no snapshot blocker" uninstall_snapshot_present
+assert_fail "no descriptor, no descriptor blocker" uninstall_descriptor_present
 
 # --- the helper daemon has to be booted out, not deleted --------------------
 #
