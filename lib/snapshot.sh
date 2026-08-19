@@ -140,8 +140,22 @@ snap_restore() {
 # history this retention exists to preserve. Unset, empty and non-numeric all
 # land on the same default, and quietly: this runs in the middle of an arm, and
 # a knob nobody set correctly is no reason to abort a session.
+#
+# Bounded in length as well as in shape, and for a second reason: /bin/sh here
+# is bash 3.2, whose arithmetic is intmax_t, so a value of 20 digits does not
+# fail -- it WRAPS. $((13 - 10000000000000000000)) is a large positive number,
+# which is an excess larger than the directory, and the loop below then removes
+# every entry in it. Same erasure as a zero, reached through a value that is
+# all digits. lib/session.sh bounds the same class of value at the same 18 for
+# the same reason (MACON_NUMBER_MAX_DIGITS, and the note above _sess_is_number);
+# the bound is restated here rather than read from there because lib/snapshot.sh
+# sources no other library module, and tests/test_snapshot.sh loads it alone.
+MACON_PMPREFS_KEEP_MAX_DIGITS=18
 MACON_PMPREFS_KEEP=${MACON_PMPREFS_KEEP:-10}
-_snap_is_number "$MACON_PMPREFS_KEEP" || MACON_PMPREFS_KEEP=10
+if ! _snap_is_number "$MACON_PMPREFS_KEEP" ||
+    [ "${#MACON_PMPREFS_KEEP}" -gt "$MACON_PMPREFS_KEEP_MAX_DIGITS" ]; then
+    MACON_PMPREFS_KEEP=10
+fi
 
 # Removes the oldest backups until at most MACON_PMPREFS_KEEP remain.
 #

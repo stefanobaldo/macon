@@ -181,4 +181,39 @@ assert_ok "the directory just created survives it" test -d "$NEW"
 assert_ok "so does the newest of the older ones" \
     test -d "$MACON_STATE/pmprefs-20260101-000012"
 
+# All digits is not enough: /bin/sh here is bash 3.2, so 20 digits WRAP rather
+# than fail, and the wrapped excess is larger than the directory -- keep-0 again,
+# through a value the shape check accepts.
+MACON_PMPREFS_KEEP=10000000000000000000
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "10" "$MACON_PMPREFS_KEEP" "an over-long retention falls back to the default too"
+
+rm -rf "$MACON_STATE"/pmprefs-*
+for _s in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-0000$_s"
+done
+NEW=$(snap_backup_plists)
+assert_eq "10" "$(count_pmprefs)" \
+    "an over-long retention prunes to the default rather than deleting them all"
+assert_ok "and the directory just created survives that too" test -d "$NEW"
+
+# The bound is a length, not a magnitude: the longest value it accepts is still
+# accepted, and keeping more than exist prunes nothing.
+MACON_PMPREFS_KEEP=999999999999999999
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "999999999999999999" "$MACON_PMPREFS_KEEP" \
+    "a retention at the length bound is kept"
+
+rm -rf "$MACON_STATE"/pmprefs-*
+for _s in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-0000$_s"
+done
+NEW=$(snap_backup_plists)
+assert_eq "13" "$(count_pmprefs)" "and prunes nothing, since none is in excess"
+assert_ok "the oldest is still there" \
+    test -d "$MACON_STATE/pmprefs-20260101-000001"
+assert_ok "and so is the directory just created" test -d "$NEW"
+
 teardown_state
