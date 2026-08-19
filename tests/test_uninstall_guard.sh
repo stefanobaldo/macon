@@ -123,6 +123,11 @@ assert_ok "an unprivileged uninstall is allowed" uninstall_check_not_root 501
 assert_fail "uninstalling as root is refused" uninstall_check_not_root 0
 OUT=$(uninstall_check_not_root 0 2>&1) || :
 assert_contains "$OUT" "sudo" "and says the script sudo's what it needs"
+# The reason, not just the refusal: no blocker reads the state directory any
+# more, so the one thing root breaks is the recovery paths this script prints
+# out of it. A message giving the old reason would still contain "sudo".
+assert_contains "$OUT" "state directory" \
+    "and says which of its own paths running as root would get wrong"
 
 # Fails closed: `[ "" -eq 0 ]` errors and exits 2 rather than returning false,
 # so an unreadable uid used to be allowed straight through.
