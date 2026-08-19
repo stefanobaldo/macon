@@ -1326,7 +1326,31 @@ cli_explain_failsafe_blockers() {
 cli_cmd_failsafe() {
     case "${1:-status}" in
         install)
-            cli_failsafe_plist_for_install | sudo tee "$MACON_FS_PLIST" >/dev/null
+            # Through a temporary file rather than `render | sudo tee`, which
+            # reports TEE's status and not the renderer's: a render that died
+            # halfway left the pipeline exiting 0 over a truncated root-owned
+            # plist, chown and chmod both succeeded on it, and what stayed on
+            # the machine was a file launchd fails to parse at every boot.
+            # install.sh had this fixed; this verb writes the same document and
+            # still had the pipe. `plutil -lint` is the check for the same
+            # reason it is there: it catches a truncated render, which a test
+            # for a non-empty file does not.
+            #
+            # The temporary file is the user's own, 0600 from mktemp, cleared
+            # through a trap so an interrupt cannot leave one behind, and
+            # copied rather than moved so the destination is root's from the
+            # start.
+            _fs_tmp=$(mktemp "${TMPDIR:-/tmp}/macon-failsafe-plist.XXXXXX") ||
+                macon_die "could not create a temporary file for the failsafe plist"
+            trap 'rm -f "$_fs_tmp"' EXIT HUP INT TERM
+            _fs_ok=1
+            cli_failsafe_plist_for_install > "$_fs_tmp" || _fs_ok=0
+            [ "$_fs_ok" -eq 1 ] && { plutil -lint "$_fs_tmp" >/dev/null 2>&1 || _fs_ok=0; }
+            [ "$_fs_ok" -eq 1 ] && { sudo cp "$_fs_tmp" "$MACON_FS_PLIST" || _fs_ok=0; }
+            rm -f "$_fs_tmp"
+            trap - EXIT HUP INT TERM
+            [ "$_fs_ok" -eq 1 ] ||
+                macon_die "the boot failsafe plist could not be written to $MACON_FS_PLIST"
             sudo chown root:wheel "$MACON_FS_PLIST"
             sudo chmod 644 "$MACON_FS_PLIST"
             # bootstrap is the modern verb and load -w the one macOS 13 may
