@@ -223,9 +223,9 @@ quiet_remove() {
     ( cli_cmd_failsafe remove "$@" ) >/dev/null 2>&1
 }
 
-# A clean machine: no session, sleep enabled, nothing saved.
+# A clean machine: no session, no descriptor, sleep enabled, nothing saved.
 clear_blockers() {
-    rm -f "$(sess_pid_path)" "$(snap_path)"
+    rm -f "$(sess_pid_path)" "$(sess_desc_path)" "$(snap_path)"
     fake_set sleep_disabled no
     mkdir -p "$(sess_run_dir)"
 }
@@ -236,12 +236,32 @@ assert_ok "and the failsafe can be removed" quiet_remove
 assert_contains "$(cat "$SUDO_LOG")" "rm -f $MACON_FS_PLIST" \
     "the removal reaches the plist"
 
-# A snapshot on disk means the machine still holds values macon changed.
+# A session descriptor brackets a session more tightly than the pid file at
+# both ends: it is on disk before launchd is asked to start the helper, and it
+# is unlinked only after the restore has run -- so a descriptor still present
+# means an ending that did not complete.
 clear_blockers
-printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
-assert_contains "$(cli_failsafe_blockers)" "snapshot" "a stored snapshot is a blocker"
+: > "$(sess_desc_path)"
+assert_contains "$(cli_failsafe_blockers)" "descriptor" \
+    "a session descriptor is a blocker"
 assert_fail "and the removal is refused" quiet_remove
 assert_eq "" "$(cat "$SUDO_LOG")" "the refusal never reached launchctl or rm"
+assert_contains "$( ( cli_cmd_failsafe remove ) 2>&1 )" "$(sess_desc_path)" \
+    "and the refusal names the descriptor it found, by the path it looked at"
+
+# A snapshot, on the other hand, outlives every session that ends by itself --
+# which is how a session ordinarily ends, since macon re-snapshots on each arm
+# rather than reverting a user to values that were correct for a night already
+# over. It is also the only record of the original values, because macOS
+# exposes no readable power defaults: a reason to keep it, not to refuse over
+# it. uninstall.sh performs its removal through this verb, so refusing here
+# while the uninstall itself proceeded printed the whole "this Mac may be left
+# unable to sleep" warning into an uninstall that then removed the plist anyway.
+clear_blockers
+printf 'sleep=1\ndisksleep=10\npowernap=1\n' > "$(snap_path)"
+assert_eq "" "$(cli_failsafe_blockers)" \
+    "a snapshot left by a finished session blocks nothing on its own"
+assert_ok "and the failsafe can still be removed" quiet_remove
 
 # Clamshell sleep still disabled is the blocker that catches a modified machine
 # whose snapshot has already gone.

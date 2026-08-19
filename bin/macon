@@ -1335,15 +1335,32 @@ cli_helper_plist_for_install() {
 # list.
 #
 # Deliberately the same three conditions, in the same three words, that
-# uninstall.sh already refuses on. This verb is what uninstall.sh calls to
-# perform the removal, so a second dialect here would be a second answer to the
-# same question -- and the project's own policy is already stated on the other
-# side of it: cli_preflight refuses to ARM a session without the failsafe.
+# install.sh and uninstall.sh already refuse on. This verb is what uninstall.sh
+# calls to perform the removal, so a second dialect here would be a second
+# answer to the same question -- and the project's own policy is already stated
+# on the other side of it: cli_preflight refuses to ARM a session without the
+# failsafe.
+#
+# The third word is the DESCRIPTOR, not the snapshot, and the two sides of that
+# have to agree because they meet on one path. A snapshot outlives every session
+# that ends by itself -- the ordinary ending -- since macon re-snapshots on each
+# arm rather than reverting a user to values that were correct for a night
+# already over; and it is the only record of the original values, because macOS
+# exposes no readable power defaults, which is a reason to keep it rather than
+# to refuse over it. Refusing here over one, while uninstall.sh no longer
+# refuses over the same file, produced the worst message this tool can print: a
+# full "this Mac may be left unable to sleep" warning naming two commands to
+# run, printed into an uninstall that swallowed the failure, removed the plist
+# itself and reported success -- with the escape hatch it named pointing at a
+# binary that was about to stop existing.
+#
+# The descriptor is the fact that actually brackets a session: on disk before
+# launchd is asked to start the helper, unlinked only after the restore has run.
 cli_failsafe_blockers() {
     _b=""
     sess_helper_alive && _b="$_b session"
     plat_sleep_disabled && _b="$_b sleep-disabled"
-    snap_exists && _b="$_b snapshot"
+    [ -f "$(sess_desc_path)" ] && _b="$_b descriptor"
     printf '%s\n' "${_b# }"
 }
 
@@ -1357,8 +1374,8 @@ cli_explain_failsafe_blockers() {
                 macon_warn "  - a session is still running ($(sess_pid_path))" ;;
             sleep-disabled)
                 macon_warn "  - clamshell sleep is DISABLED right now" ;;
-            snapshot)
-                macon_warn "  - the power snapshot is still on disk: $(snap_path)" ;;
+            descriptor)
+                macon_warn "  - a session descriptor is present: $(sess_desc_path)" ;;
         esac
     done
     macon_warn "the boot failsafe is the only thing that clears disablesleep after a"
