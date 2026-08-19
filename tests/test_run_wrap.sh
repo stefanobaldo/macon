@@ -78,6 +78,13 @@ fake_set "launchd_$MACON_FS_LABEL" "not running"
 # preflight as `macon on`, which now refuses when launchd does not have the job.
 MACON_HELPER_LABEL=local.macon.helper
 fake_set launchd_local.macon.helper "not running"
+# And its plist, redirected and created. Arming RELOADS the job -- bootout then
+# bootstrap -- so preflight refuses when the plist is gone, and a file left
+# pointing at /Library/LaunchDaemons answers according to whether the machine
+# running the suite happens to have macon installed. It passed here and failed
+# on CI, which is the wrong way round for that to be discovered.
+MACON_HELPER_PLIST="$MACON_STATE/local.macon.helper.plist"
+: > "$MACON_HELPER_PLIST"
 
 TMPDIR="$MACON_STATE/tmp"
 mkdir -p "$TMPDIR"

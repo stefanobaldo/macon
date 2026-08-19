@@ -39,6 +39,13 @@ fake_set "launchd_$MACON_FS_LABEL" "not running"
 # test.
 MACON_HELPER_LABEL=local.macon.helper
 fake_set launchd_local.macon.helper "not running"
+# And its plist, redirected and created. Arming RELOADS the job -- bootout then
+# bootstrap -- so preflight refuses when the plist is gone, and a file left
+# pointing at /Library/LaunchDaemons answers according to whether the machine
+# running the suite happens to have macon installed. It passed here and failed
+# on CI, which is the wrong way round for that to be discovered.
+MACON_HELPER_PLIST="$MACON_STATE/local.macon.helper.plist"
+: > "$MACON_HELPER_PLIST"
 
 # The hand-over descriptor is built under TMPDIR; pointing that at the test's
 # own directory keeps the assertion about cleaning it up from ever looking at
@@ -361,6 +368,31 @@ assert_contains "$OUT" "install.sh" \
 assert_fail "and nothing was applied" plat_sleep_disabled
 assert_fail "and no snapshot was taken" snap_exists
 fake_set launchd_local.macon.helper "not running"
+
+# --- the daemon is loaded but its plist is gone -----------------------------
+#
+# A SECOND fact, and one that only became load-bearing when arming started
+# reloading the job instead of kickstarting it. A loaded job outlives its plist
+# file -- verified -- so a half-uninstalled machine answers "loaded" to the gate
+# above and has nothing to bootstrap from. Kickstart did not care; a reload does.
+#
+# Refused in preflight rather than discovered in cli_arm, because by then the
+# power settings are applied and the answer is a rollback the user reads as a
+# failure to start rather than as a macon that is half gone.
+
+clean_machine
+rm -f "$(snap_path)"
+rm -f "$MACON_HELPER_PLIST"
+OPT_ALLOW_BATTERY=0
+OPT_NO_FAILSAFE=0
+OUT=$( (cli_preflight) 2>&1 )
+assert_contains "$OUT" "$MACON_HELPER_PLIST" \
+    "preflight refuses a loaded daemon whose plist is gone, and names the file"
+assert_contains "$OUT" "install.sh" \
+    "and points at the installer, which is what puts the file back"
+assert_fail "and nothing was applied" plat_sleep_disabled
+assert_fail "and no snapshot was taken" snap_exists
+: > "$MACON_HELPER_PLIST"
 
 # --- the descriptor is refused ----------------------------------------------
 #
