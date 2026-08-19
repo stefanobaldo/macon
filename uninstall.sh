@@ -53,8 +53,9 @@ uninstall_check_not_root() {
     fi
     [ "$1" -eq 0 ] || return 0
     printf 'macon: do not run the uninstaller as root.\n' >&2
-    printf 'macon: it runs sudo for the steps that need root, and it has to read\n' >&2
-    printf 'macon: YOUR state directory to know whether this Mac can still sleep.\n' >&2
+    printf 'macon: it runs sudo for the steps that need root, and the recovery\n' >&2
+    printf 'macon: paths it prints come out of YOUR state directory: under sudo it\n' >&2
+    printf 'macon: would name the root account one, which holds no power snapshot.\n' >&2
     if [ -n "${2:-}" ]; then
         printf 'macon: re-run it without sudo: sh uninstall.sh\n' >&2
     fi
