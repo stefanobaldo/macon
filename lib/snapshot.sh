@@ -127,6 +127,45 @@ snap_restore() {
     return "$_rc"
 }
 
+# How many pmprefs-* backups to keep. The newest is what a by-hand recovery
+# reads; the older ones matter only if the newest was taken after something had
+# already gone wrong. One is created per arm, so without a bound the directory
+# grows for as long as the tool is used -- 48 in three days on the verification
+# machine.
+MACON_PMPREFS_KEEP=${MACON_PMPREFS_KEEP:-10}
+
+# Removes the oldest backups until at most MACON_PMPREFS_KEEP remain.
+#
+# Ordering is the shell's own pathname expansion, which sorts: the names are
+# pmprefs-YYYYmmdd-HHMMSS, so lexicographic order IS creation order. mtime is
+# deliberately not consulted -- restoring the user's home from a backup rewrites
+# it and would reorder the history.
+#
+# Only pmprefs-* directories are ever candidates. The `snapshot` file lives in
+# the same directory and is the live restore source; it is not matched by the
+# glob and must never be.
+#
+# Variables are prefixed _sp_ because the caller holds _dst and _backup_rc
+# across this call, and in POSIX sh there is no `local`.
+_snap_prune_plists() {
+    _sp_n=0
+    for _sp_d in "$(_snap_dir)"/pmprefs-*; do
+        [ -d "$_sp_d" ] || continue
+        _sp_n=$((_sp_n + 1))
+    done
+
+    _sp_excess=$((_sp_n - MACON_PMPREFS_KEEP))
+    [ "$_sp_excess" -gt 0 ] || return 0
+
+    for _sp_d in "$(_snap_dir)"/pmprefs-*; do
+        [ -d "$_sp_d" ] || continue
+        [ "$_sp_excess" -gt 0 ] || break
+        rm -rf "$_sp_d" 2>/dev/null || :
+        _sp_excess=$((_sp_excess - 1))
+    done
+    return 0
+}
+
 # Forensic only. Restoring these files at runtime does not make powerd
 # re-read them; they exist so the real values can be recovered by hand if
 # the snapshot is ever lost. Echoes the destination either way, but reports
@@ -136,6 +175,9 @@ snap_backup_plists() {
     mkdir -p "$_dst"
     plat_backup_pmprefs "$_dst"
     _backup_rc=$?
+    # Never changes the verdict: a directory that cannot be removed is not a
+    # reason to fail an arm.
+    _snap_prune_plists
     printf '%s\n' "$_dst"
     return "$_backup_rc"
 }
