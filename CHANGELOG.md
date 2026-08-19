@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before this, a killed helper left the machine unable to sleep with nothing
   watching it, until the next macon command noticed the orphan or the machine
   was rebooted.
+- Installing, uninstalling and removing the boot failsafe no longer refuse over
+  a power snapshot left behind by a session that ended on its own — which is how
+  a session ordinarily ends, since macon takes a fresh snapshot on every arm
+  rather than restoring values that were correct for a night already over. One
+  session was enough to make the next install or uninstall refuse and send the
+  user to `macon off` on a machine holding nothing. They now look at the session
+  descriptor, which is on disk from the arm until the session ends, so every
+  state the guard exists for is still refused: a live helper, a descriptor left
+  by an ending that did not complete, and a Mac still reporting that sleep is
+  disabled. The snapshot is kept and never blocks anything — it is the only
+  record of the original values, because macOS exposes no readable power
+  defaults.
+- The power-preference backups no longer grow without bound. One `pmprefs-*`
+  directory was created on every arm and nothing ever removed them: 48 of them
+  accumulated in three days of use on the verification machine.
 
 ### Added
 
@@ -49,6 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again. `uninstall.sh` boots the daemon out before it removes the components
   and aborts if `launchd` still has the job, rather than leaving a root job
   respawning a program that is gone.
+- `MACON_PMPREFS_KEEP` sets how many `pmprefs-*` backup directories are kept in
+  the state directory, newest first; the default is 10. The newest is what a
+  by-hand recovery reads, and the older ones matter only if the newest was taken
+  after something had already gone wrong. `0` keeps none. A value that is not a
+  plain positive number falls back to the default, quietly — this runs in the
+  middle of an arm, and a mistyped knob is no reason to abort a session.
 
 ## [0.1.0]
 
