@@ -46,10 +46,10 @@ rm -f "$MACON_RUN/helper.pid"
 
 # --- a session descriptor ---------------------------------------------------
 #
-# The descriptor is on disk from the moment `macon on` hands one to the root
-# helper until the session ends, which covers the window the pid file cannot:
-# between the snapshot and `pmset disablesleep 1` there is no helper pid and no
-# IORegistry bit, but the descriptor is already there.
+# The descriptor brackets a session more tightly than the pid file at both
+# ends: it is on disk before launchd is asked to start the helper, and it is
+# unlinked only after the restore has run -- so a descriptor still present
+# means an ending that did not complete.
 
 assert_fail "an empty run directory holds no descriptor" \
     uninstall_descriptor_present
@@ -57,7 +57,8 @@ assert_fail "an empty run directory holds no descriptor" \
 assert_ok "a session descriptor is detected" uninstall_descriptor_present
 assert_contains "$(uninstall_blockers)" "descriptor" "and blocks the uninstall"
 OUT=$(uninstall_explain_blockers "$(uninstall_blockers)" 2>&1)
-assert_contains "$OUT" "session.conf" "the refusal names the descriptor it found"
+assert_contains "$OUT" "$MACON_RUN/session.conf" \
+    "the refusal names the descriptor it found, by the path it looked at"
 assert_contains "$OUT" "macon off" "the refusal points at the command that fixes it"
 assert_contains "$OUT" "--force" "and names the override for someone who means it"
 rm -f "$MACON_RUN/session.conf"
@@ -123,10 +124,11 @@ assert_ok "an unprivileged uninstall is allowed" uninstall_check_not_root 501
 assert_fail "uninstalling as root is refused" uninstall_check_not_root 0
 OUT=$(uninstall_check_not_root 0 2>&1) || :
 assert_contains "$OUT" "sudo" "and says the script sudo's what it needs"
-# The reason, not just the refusal: no blocker reads the state directory any
+# The reason, not just the refusal. No blocker reads the state directory any
 # more, so the one thing root breaks is the recovery paths this script prints
-# out of it. A message giving the old reason would still contain "sudo".
-assert_contains "$OUT" "state directory" \
+# out of it -- and the reason it used to give would pass both the assertion
+# above and a bare "state directory", which that wording also contained.
+assert_contains "$OUT" "paths it prints come out of YOUR state directory" \
     "and says which of its own paths running as root would get wrong"
 
 # Fails closed: `[ "" -eq 0 ]` errors and exits 2 rather than returning false,

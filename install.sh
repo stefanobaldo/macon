@@ -141,9 +141,10 @@ install_helper_alive() {
 }
 
 # A session descriptor exists from the moment `macon on` hands one to the root
-# helper until the session ends. It is the signal the pid file cannot give:
-# between the snapshot and `pmset disablesleep 1` there is no helper pid and no
-# IORegistry bit, but the descriptor is already on disk.
+# helper until the session ends. It brackets a session more tightly than the
+# pid file at both ends: it is on disk before launchd is asked to start the
+# helper, and it is unlinked only after the restore has run -- so a descriptor
+# still present means an ending that did not complete.
 #
 # The power snapshot is deliberately NOT a blocker. It outlives every session
 # that ends by itself -- the deadline path and the orphan heal both restore and

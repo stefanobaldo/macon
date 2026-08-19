@@ -134,7 +134,8 @@ assert_fail "an empty run directory holds no descriptor" \
 assert_ok "a session descriptor is detected" install_descriptor_present
 assert_contains "$(install_blockers)" "descriptor" "and blocks the install"
 OUT=$(install_explain_blockers "$(install_blockers)" 2>&1)
-assert_contains "$OUT" "session.conf" "the refusal names the descriptor it found"
+assert_contains "$OUT" "$MACON_RUN/session.conf" \
+    "the refusal names the descriptor it found, by the path it looked at"
 rm -f "$MACON_RUN/session.conf"
 
 # install.sh calls ioreg directly and by design -- it has to answer this with
