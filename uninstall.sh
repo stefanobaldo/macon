@@ -3,11 +3,11 @@
 #
 # Usage: sh uninstall.sh [--force]   (as yourself -- NOT under sudo)
 #
-# It refuses while this Mac still looks like it is holding a session. That is
-# the whole safety story of this file: removing the CLI and the LaunchDaemon
-# takes away the command that restores the power configuration AND the boot
-# job that would have restored it if nobody ran the command. Doing that while
-# sleep is disabled leaves a Mac that cannot sleep and no tool left to fix it.
+# It refuses while this Mac is holding a session. That is the whole safety story
+# of this file: removing the CLI and the LaunchDaemon takes away the command
+# that restores the power configuration AND the boot job that would have
+# restored it if nobody ran the command. Doing that while sleep is disabled
+# leaves a Mac that cannot sleep and no tool left to fix it.
 #
 # Session records and the power snapshot are deliberately left in place; the
 # script says where they are.
@@ -32,8 +32,9 @@ uninstall_run_dir() {
 }
 
 # Same reasoning as the installer, plus one of its own: under sudo, HOME is the
-# root account's, so the snapshot check below would look in a directory that
-# never holds one and report a modified machine as safe to strand.
+# root account's, so every path this script prints out of the state directory --
+# the --force recovery line and the closing note -- would name a directory that
+# never held the snapshot the user has to reapply by hand.
 uninstall_check_not_root() {
     # Guarded before the comparison, and it fails CLOSED: `[ "" -eq 0 ]` errors
     # and exits 2 rather than returning false, so an unreadable uid would take
@@ -76,12 +77,13 @@ uninstall_helper_alive() {
     ps -p "$_pid" -o pid= >/dev/null 2>&1
 }
 
-# A snapshot exists only between `macon on` and a successful `macon off`. Its
-# presence means the machine still holds values macon changed -- and it is the
-# only record of what they were, since macOS exposes no power defaults to
-# reconstruct them from.
-uninstall_snapshot_present() {
-    [ -f "$(uninstall_state_dir)/snapshot" ]
+# A session descriptor exists from the moment `macon on` hands one to the root
+# helper until the session ends. The power snapshot is deliberately NOT a
+# blocker: it outlives every session that ends by itself, and it is the only
+# record of the original values, since macOS exposes no power defaults to
+# reconstruct them from -- which is a reason to keep it, not to refuse over it.
+uninstall_descriptor_present() {
+    [ -f "$(uninstall_run_dir)/session.conf" ]
 }
 
 # Read straight from the IORegistry rather than through lib/platform.sh:
@@ -97,7 +99,7 @@ uninstall_blockers() {
     _b=""
     uninstall_helper_alive && _b="$_b session"
     uninstall_sleep_disabled && _b="$_b sleep-disabled"
-    uninstall_snapshot_present && _b="$_b snapshot"
+    uninstall_descriptor_present && _b="$_b descriptor"
     printf '%s\n' "${_b# }"
 }
 
@@ -114,9 +116,9 @@ uninstall_explain_blockers() {
             sleep-disabled)
                 printf '  - clamshell sleep is DISABLED right now\n' >&2
                 ;;
-            snapshot)
-                printf '  - the power snapshot is still on disk: %s/snapshot\n' \
-                    "$(uninstall_state_dir)" >&2
+            descriptor)
+                printf '  - a session descriptor is present: %s/session.conf\n' \
+                    "$(uninstall_run_dir)" >&2
                 ;;
         esac
     done
@@ -214,11 +216,10 @@ uninstall_explain_stuck_helper() {
     return 0
 }
 
-# Removing the boot failsafe goes through the CLI, which refuses while this Mac
-# still looks like it is holding a session -- the same three blockers checked
-# here. FORCE is the decision already taken above, passed through: without it,
-# `uninstall.sh --force` would stop at the verb it calls, having warned the user
-# that it was going ahead.
+# Removing the boot failsafe goes through the CLI, which refuses on blockers of
+# its own while this Mac may be left unable to sleep. FORCE is the decision
+# already taken above, passed through: without it, `uninstall.sh --force` would
+# stop at the verb it calls, having warned the user that it was going ahead.
 uninstall_failsafe_remove() {
     [ -x "$MACON_PREFIX/bin/macon" ] || return 0
     if [ "$1" -eq 1 ]; then
