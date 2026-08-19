@@ -132,7 +132,16 @@ snap_restore() {
 # already gone wrong. One is created per arm, so without a bound the directory
 # grows for as long as the tool is used -- 48 in three days on the verification
 # machine.
+#
+# The value is a count this module deletes directories by, and it arrives from
+# the environment, so it goes through the module's number check. A garbage value
+# is NOT a zero: unvalidated, `$((n - garbage))` is `$((n - 0))` in a shell
+# without `set -u`, which would delete every backup -- the whole forensic
+# history this retention exists to preserve. Unset, empty and non-numeric all
+# land on the same default, and quietly: this runs in the middle of an arm, and
+# a knob nobody set correctly is no reason to abort a session.
 MACON_PMPREFS_KEEP=${MACON_PMPREFS_KEEP:-10}
+_snap_is_number "$MACON_PMPREFS_KEEP" || MACON_PMPREFS_KEEP=10
 
 # Removes the oldest backups until at most MACON_PMPREFS_KEEP remain.
 #
