@@ -673,7 +673,23 @@ cli_preflight() {
         macon_die "the machine already looks modified and no fresh snapshot could be taken; run 'macon off', or restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
     fi
     cli_out 'saved original power state to %s\n' "$(snap_path)"
-    cli_out 'plist backup in %s\n' "$(snap_backup_plists)"
+
+    # Announced only when the directory is still there. snap_backup_plists
+    # creates the destination, fills it, then prunes to MACON_PMPREFS_KEEP -- so
+    # with a retention of zero, which is a real request to keep none, the backup
+    # just taken is itself in the excess, and printing the path it echoed named
+    # a directory deleted microseconds earlier.
+    #
+    # Fixed here rather than there: the function's contract is that it echoes
+    # the destination and reports whether a plist actually landed, and this is
+    # the only caller that prints the path.
+    #
+    # Prefixed _pf_ because this function and snap_backup_plists both hold
+    # variables across the call, and POSIX sh has no `local`.
+    _pf_backup=$(snap_backup_plists)
+    if [ -d "$_pf_backup" ]; then
+        cli_out 'plist backup in %s\n' "$_pf_backup"
+    fi
 }
 
 # Builds the hand-over descriptor from the OPT_* set cli_parse_on published, and

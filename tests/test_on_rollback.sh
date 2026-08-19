@@ -275,6 +275,43 @@ assert_fail "on refuses while a session is already active" try_on 8
 assert_eq "0" "$(fake_call_count 'pmset')" "the already-active refusal touched nothing"
 rm -f "$(sess_pid_path)" "$MACON_STATE/fake/proc_4242"
 
+# --- the plist backup line names a directory that is really there ------------
+#
+# snap_backup_plists creates the destination, fills it, then prunes to
+# MACON_PMPREFS_KEEP -- so with a retention of zero, which is a real request to
+# keep none, the backup just taken is itself in the excess. Printing the path it
+# echoed named a directory deleted microseconds earlier, and said so with rc 0.
+#
+# The contract of snap_backup_plists is deliberately unchanged: it echoes the
+# destination and reports whether a plist actually landed. Only the message is
+# conditional, at the one call site that prints it.
+
+clean_machine
+rm -f "$(snap_path)"
+# cli_preflight is called directly, so the option set cli_parse_on would have
+# published has to be stated: under `set -u` an unread flag is fatal.
+OPT_ALLOW_BATTERY=0
+OPT_NO_FAILSAFE=0
+KEEP_SAVED=$MACON_PMPREFS_KEEP
+MACON_PMPREFS_KEEP=0
+OUT=$( (cli_preflight) 2>&1 )
+MACON_PMPREFS_KEEP=$KEEP_SAVED
+assert_contains "$OUT" "saved original power state" \
+    "preflight with no retention still snapshots and still arms"
+assert_fail "and says nothing about a backup directory it pruned away" \
+    sh -c "case \"$OUT\" in *'plist backup in'*) exit 0 ;; esac; exit 1"
+
+# The ordinary retention keeps the backup, so the line is printed -- and the
+# path in it is a directory that exists.
+clean_machine
+rm -f "$(snap_path)"
+OPT_ALLOW_BATTERY=0
+OPT_NO_FAILSAFE=0
+OUT=$( (cli_preflight) 2>&1 )
+assert_contains "$OUT" "plist backup in " "the kept backup is announced"
+BACKUP_DIR=$(printf '%s\n' "$OUT" | sed -n 's/^plist backup in //p')
+assert_ok "and the directory the message names is on disk" test -d "$BACKUP_DIR"
+
 # --- on: the descriptor it builds -------------------------------------------
 
 clean_machine
