@@ -112,6 +112,14 @@ real_status_session() {
     macon status | awk -F': *' '/^session:/ { print $2; exit }'
 }
 
+# The helper daemon's row, the same way and for the same reason: "loaded, idle"
+# is matched against this line alone, never against the whole status output.
+# The value carries its own colon -- "loaded, idle (runs: 2)" -- so the label is
+# stripped by prefix rather than split on the separator.
+real_status_helper_daemon() {
+    macon status | sed -n 's/^helper daemon: *//p'
+}
+
 assert_eq "none" "$(real_status_session)" "status reports no session before arming"
 
 # --- the cycle ----------------------------------------------------------
@@ -132,6 +140,76 @@ assert_fail "status no longer reports 'none' once armed" \
 assert_ok "off restores" macon off
 
 assert_eq "none" "$(real_status_session)" "status reports no session after off"
+
+# --- the helper is killed mid-session ---------------------------------------
+#
+# The whole point of the daemon, and the one behaviour no fake can establish:
+# launchd has to actually bring the helper back, and the new instance has to
+# actually resume from the root-owned descriptor rather than starting over or
+# giving up.
+#
+# It runs before the baseline comparison below on purpose, so that diff covers
+# this cycle too: a crash-and-resume that ended without giving the machine its
+# sleep back would fail there rather than going unnoticed.
+
+assert_ok "a session arms for the crash cycle" macon on 1 --max 1 --no-failsafe
+
+PID_BEFORE=$(sudo cat /var/run/macon/helper.pid 2>/dev/null || printf '')
+assert_ok "a session is running" test -n "$PID_BEFORE"
+
+sudo kill -9 "$PID_BEFORE"
+
+# ThrottleInterval is 10s, and the kill may land inside a throttle window, so
+# the budget is generous. What is being tested is that it comes back at all.
+N=0
+PID_AFTER=''
+while [ "$N" -lt 40 ]; do
+    PID_AFTER=$(sudo cat /var/run/macon/helper.pid 2>/dev/null || printf '')
+    [ -n "$PID_AFTER" ] && [ "$PID_AFTER" != "$PID_BEFORE" ] && break
+    sleep 1
+    N=$((N + 1))
+done
+printf '  the helper came back after %ss (pid %s -> %s)\n' "$N" "$PID_BEFORE" "$PID_AFTER"
+
+assert_ok "launchd respawned the helper" test "$PID_AFTER" != "$PID_BEFORE"
+assert_ok "and it is alive" sudo kill -0 "$PID_AFTER"
+
+# Read off the `session:` row and nothing else. `macon status` prints
+# "clamshell sleep: active" on a perfectly idle machine, so a bare match for
+# "active" against the whole output is an assertion that passes with no session
+# at all -- the same trap real_status_session exists for above.
+assert_contains "$(real_status_session)" "active" \
+    "the session resumed rather than ending"
+assert_ok "and the machine is still armed" real_sleep_disabled
+
+# launchd counts the starts, so the respawn is visible from the outside as
+# well: install bootstraps (1), `macon on` kickstarts (2), the kill above adds
+# one. Matched loosely -- the row is best-effort by construction and the claim
+# here is only that the counter moved past a clean session's baseline.
+printf '  helper daemon row: %s\n' "$(real_status_helper_daemon)"
+
+assert_ok "off ends the resumed session" macon off
+
+assert_eq "none" "$(real_status_session)" "off ended the session"
+
+# The bootout half of `macon off`, checked for real. The fake's bootout leaves
+# the scripted process table alone, so the suite's only fake-backed coverage of
+# this is the DEGRADED branch -- a helper still running after the bootout. Here
+# the real launchctl is what stops it, and nothing is left polling against the
+# restore.
+assert_fail "the booted-out helper is really gone" sudo kill -0 "$PID_AFTER"
+
+# --- a clean ending does not respawn ----------------------------------------
+#
+# The other half of SuccessfulExit false. A session that ends normally must
+# leave the job loaded and QUIET; a bare KeepAlive would restart the helper here
+# for ever, and it would look exactly like a working install.
+
+assert_contains "$(real_status_helper_daemon)" "loaded, idle" \
+    "after a session the daemon is loaded with no process"
+sleep 15
+assert_contains "$(real_status_helper_daemon)" "loaded, idle" \
+    "and it is still idle a throttle interval later, not respawning"
 
 # --- the comparison this suite exists for -------------------------------
 
