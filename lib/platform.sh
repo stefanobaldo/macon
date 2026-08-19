@@ -166,6 +166,41 @@ plat_say_as_user() {
     ) < /dev/null > /dev/null 2>&1 &
 }
 
+# The command prefix that puts a de-privileged command inside USER's own login
+# session, or NOTHING when there is no such session to enter. Printed rather
+# than executed, because the caller has to wrap it in its own timeout.
+#
+# The same regression plat_say_as_user was hardened against, reaching the other
+# place that runs user code: --hook-end, --hook-warn and --busy-check all go
+# through helper_run_as_user, which used plain `sudo -u`. That was enough while
+# the helper was a descendant of the user's Terminal and inherited its Mach
+# bootstrap namespace; it is now a launchd SYSTEM daemon and has none.
+#
+# Measured from a one-shot system daemon on this machine, running the same
+# probes both ways. `sudo -u` alone: pgrep, a bare osascript and `display
+# notification` all work, and `pbpaste` -- a per-user Mach service -- fails.
+# Through asuser: all of them work. So the loss is narrower than "the GUI does
+# not work", and it is real.
+#
+# The GUI session is CHECKED rather than assumed, and that is the whole reason
+# this is a prefix and not an unconditional wrapper. `launchctl asuser` needs a
+# session to attach to; on a machine where nobody is logged in it fails, and an
+# unconditional form would stop running hooks that plain `sudo -u` runs today.
+# A failed hook is not distinguishable from a hook that exited non-zero, so the
+# question is asked in front instead of diagnosed behind. The cost is one
+# `launchctl print` per hook or predicate, and those run at most once per poll.
+plat_asuser_prefix() {
+    _plat_u=$1
+
+    _plat_uid=$(id -u "$_plat_u" 2>/dev/null) || return 0
+    case "$_plat_uid" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+
+    launchctl print "gui/$_plat_uid" > /dev/null 2>&1 || return 0
+    printf 'launchctl asuser %s ' "$_plat_uid"
+}
+
 plat_power_source() {
     if pmset -g batt 2>/dev/null | grep -q "'AC Power'"; then
         printf 'ac\n'

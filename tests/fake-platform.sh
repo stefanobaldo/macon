@@ -108,6 +108,17 @@ plat_say_as_user() {
     fake_record "say_as_user $1 $2"
 }
 
+# Scripted, and EMPTY by default. The prefix the real one prints is a command
+# the caller then runs, so a fake that invented one would put the real
+# `launchctl asuser` in front of every hook and predicate the suite executes --
+# the one place where returning a plausible value reaches the machine instead of
+# describing it. `fake_set asuser_prefix ...` is for the tests that need the
+# other branch, and nothing else gets one.
+plat_asuser_prefix() {
+    fake_record "asuser_prefix $1"
+    fake_get_or asuser_prefix ''
+}
+
 plat_power_source() { fake_get_or power_source ac; }
 
 plat_battery_pct() { fake_get_or battery_pct 100; }

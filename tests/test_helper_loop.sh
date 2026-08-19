@@ -398,6 +398,59 @@ assert_eq "1" "$(fake_call_count 'pmset_apply_ac')" \
 assert_eq "$_before" "$(rec_sessions 0 | wc -l | tr -d ' ')" \
     "an unusable session id writes no half-empty index row"
 
+# --- user code runs inside the user's own session ---------------------------
+#
+# helper_run_as_user takes its de-privileging branch only when the helper is
+# root or the target user differs from the one running it -- and every other
+# test in this file passes the user it is already running as, so the branch that
+# executes EVERY hook and predicate in production had no coverage at all.
+#
+# It is reached here simply by naming a different user. `sudo` is shadowed by a
+# shell function so nothing is elevated, and the prefix comes from the fake, so
+# no test reaches the real launchd. Both are unset immediately afterwards: a
+# stub left in place shadows the real thing for the whole sourced file, which
+# this suite has already been bitten by once.
+
+ASUSER_SAW="$MACON_STATE/asuser_saw"
+export ASUSER_SAW
+
+# Both are reached by name from a command line the code under test builds, so
+# the linter cannot see the call site. That indirection IS the test.
+# shellcheck disable=SC2329
+PREFIX_MARK() { printf 'asuser-prefix\n' >> "$ASUSER_SAW"; "$@"; }
+# sudo -u USER -- CMD...: the three words this call always passes are dropped
+# and the rest is run as-is, unprivileged.
+# shellcheck disable=SC2329
+sudo() { printf 'sudo-u %s\n' "$2" >> "$ASUSER_SAW"; shift 3; "$@"; }
+
+rm -f "$ASUSER_SAW" "$MACON_STATE/asuser_cmd"
+fake_set asuser_prefix PREFIX_MARK
+helper_run_as_user someone 5 "printf ran > '$MACON_STATE/asuser_cmd'"
+
+assert_contains "$(fake_calls)" "asuser_prefix someone" \
+    "running code as another user asks for that user's session prefix"
+assert_contains "$(cat "$ASUSER_SAW")" "asuser-prefix" \
+    "and the command goes through it, so a system daemon reaches the user's session"
+assert_contains "$(cat "$ASUSER_SAW")" "sudo-u someone" \
+    "and is still de-privileged to that user, not merely relocated"
+assert_eq "ran" "$(cat "$MACON_STATE/asuser_cmd")" "and the command itself runs"
+
+# No session to enter -- nobody logged in. The prefix is empty and the call
+# degrades to exactly the invocation that shipped before this, which is the
+# whole reason plat_asuser_prefix reports rather than wraps.
+rm -f "$ASUSER_SAW" "$MACON_STATE/asuser_cmd"
+fake_set asuser_prefix ''
+helper_run_as_user someone 5 "printf ran > '$MACON_STATE/asuser_cmd'"
+
+assert_fail "with no login session nothing is prefixed" \
+    grep -q 'asuser-prefix' "$ASUSER_SAW"
+assert_contains "$(cat "$ASUSER_SAW")" "sudo-u someone" \
+    "and the command is still run as the user"
+assert_eq "ran" "$(cat "$MACON_STATE/asuser_cmd")" "and still runs"
+
+unset -f sudo PREFIX_MARK
+fake_set asuser_prefix ''
+
 # --- the display watch ------------------------------------------------------
 #
 # What `disablesleep` suppresses is the whole clamshell path, and turning the

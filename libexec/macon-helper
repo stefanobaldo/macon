@@ -180,7 +180,16 @@ helper_run_as_user() {
     _timeout=$2
     _cmd=$3
     if helper_needs_sudo "$(id -u)" "$(id -un)" "$_user"; then
-        macon_run_timeout "$_timeout" sudo -u "$_user" -- /bin/sh -c "$_cmd"
+        # The prefix is empty on a machine with nobody logged in, which is
+        # exactly today's invocation -- see plat_asuser_prefix for what it buys
+        # and why it is asked for rather than assumed.
+        #
+        _prefix=$(plat_asuser_prefix "$_user")
+        # Intentionally unquoted: it is a command prefix, not one word. Same
+        # shape, and the same disable, as snap_restore's argument list.
+        # shellcheck disable=SC2086
+        macon_run_timeout "$_timeout" $_prefix \
+            sudo -u "$_user" -- /bin/sh -c "$_cmd"
     else
         macon_run_timeout "$_timeout" /bin/sh -c "$_cmd"
     fi
