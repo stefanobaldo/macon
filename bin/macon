@@ -7,7 +7,7 @@
 # descriptor to the root helper; it never runs the watch loop itself.
 set -u
 
-MACON_VERSION=0.1.0
+MACON_VERSION=0.1.0-rc.2
 
 # The authoritative notice is LICENSE; this is the courtesy copy `macon version`
 # prints, and a test asserts the two still agree. It is a separate string rather
