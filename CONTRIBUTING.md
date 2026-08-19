@@ -55,7 +55,44 @@ closes on merge and the two stay linked in the record.
   places are safe only because of that, which is worth knowing before you
   "simplify" one of them into a direct call.
 - `main` is protected. Changes land by pull request with a linear history
-  (rebase merge). Versions are annotated tags on `main`, SemVer `0.x`.
+  (rebase merge). Versions are annotated tags on `main`, SemVer.
+
+## Releases
+
+Nothing has been distributed yet. What exists is `0.1.0-rc.N`, the code the
+maintainer runs overnight while the first release is qualified against real
+nights; `0.1.0` is cut once it has been, and is the first version anyone else is
+meant to install. The pre-release identifier is written `rc.1`, with the dot:
+SemVer compares dot-separated numeric identifiers numerically, and `rc1` would
+be one alphanumeric identifier instead, sorting `rc10` before `rc2`.
+
+`macon status` reports the running version as its first row, and a bug report is
+only actionable if it carries one, so the version the CLI reports and the
+changelog must agree. `tests/test_docs.sh` enforces that: it reads
+`MACON_VERSION` out of `bin/macon` and requires `CHANGELOG.md` to carry a
+heading for it. Cutting a version without writing its section fails the suite.
+
+**A tag's message is that version's changelog section, extracted rather than
+retyped.** The changelog is already the release notes; a tag written by hand is
+a second description of the same release that can drift from the first, and a
+tag is public and permanent.
+
+```sh
+v=0.1.0-rc.2
+{ printf 'macon %s\n\n' "$v"
+  awk -v v="$v" '$0 ~ "^## \\["v"\\]" {f=1; next} f && /^## / {exit} f' CHANGELOG.md
+} | git tag -a --cleanup=whitespace "v$v" -F -
+```
+
+`--cleanup=whitespace` is not optional. `git tag -a` defaults to `--cleanup=strip`,
+which drops every line beginning with `#` — that is every Markdown heading in the
+section, so the `### Fixed` and `### Added` groupings vanish from the tag with no
+warning and no error.
+
+The changelog read is always the one on `main`, and the tag may point at an
+older commit than that — `git tag -a ... <commit>`. `main` is what records the
+release history; a section can be corrected or renamed after the commit it
+describes, and the tag should carry the correction rather than the draft.
 
 ## The safety invariant
 
