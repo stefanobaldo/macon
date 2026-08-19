@@ -216,4 +216,40 @@ assert_ok "the oldest is still there" \
     test -d "$MACON_STATE/pmprefs-20260101-000001"
 assert_ok "and so is the directory just created" test -d "$NEW"
 
+# A leading zero is octal to $(( )), so 010 would quietly mean eight and 099 is
+# not a number at all. Both fall back rather than answering a question nobody
+# asked.
+MACON_PMPREFS_KEEP=010
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "10" "$MACON_PMPREFS_KEEP" "a leading zero falls back rather than meaning eight"
+
+rm -rf "$MACON_STATE"/pmprefs-*
+for _s in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-0000$_s"
+done
+NEW=$(snap_backup_plists)
+assert_eq "10" "$(count_pmprefs)" "and ten backups survive, not eight"
+
+MACON_PMPREFS_KEEP=099
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "10" "$MACON_PMPREFS_KEEP" "a value that is not valid octal falls back too"
+
+rm -rf "$MACON_STATE"/pmprefs-*
+for _s in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    mkdir -p "$MACON_STATE/pmprefs-20260101-0000$_s"
+done
+NEW=$(snap_backup_plists)
+assert_eq "10" "$(count_pmprefs)" "pruning to the default rather than dying in the arithmetic"
+assert_ok "with the directory just created still there" test -d "$NEW"
+
+# Bare zero is not a typo, it is a request to keep none, and it still is one.
+MACON_PMPREFS_KEEP=0
+# shellcheck source=lib/snapshot.sh
+. "$MACON_LIB/snapshot.sh"
+assert_eq "0" "$MACON_PMPREFS_KEEP" "bare zero survives the guard"
+NEW=$(snap_backup_plists)
+assert_eq "0" "$(count_pmprefs)" "and clears the directory as asked"
+
 teardown_state

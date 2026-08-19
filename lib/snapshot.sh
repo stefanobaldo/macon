@@ -150,10 +150,19 @@ snap_restore() {
 # the same reason (MACON_NUMBER_MAX_DIGITS, and the note above _sess_is_number);
 # the bound is restated here rather than read from there because lib/snapshot.sh
 # sources no other library module, and tests/test_snapshot.sh loads it alone.
+#
+# A leading zero is rejected for the third reason lib/session.sh gives at
+# _sess_is_number: $(( )) reads it as octal. `010` is not a spelling of ten, it
+# IS eight -- a knob answering a different question than the one it was asked,
+# and saying nothing -- and `099` is not valid octal at all, which makes the
+# arithmetic an error rather than a value. Bare `0` is a real request, and stays
+# one: it clears the directory, which lib/session.sh:104 preserves the same way.
 MACON_PMPREFS_KEEP_MAX_DIGITS=18
 MACON_PMPREFS_KEEP=${MACON_PMPREFS_KEEP:-10}
 if ! _snap_is_number "$MACON_PMPREFS_KEEP" ||
-    [ "${#MACON_PMPREFS_KEEP}" -gt "$MACON_PMPREFS_KEEP_MAX_DIGITS" ]; then
+    [ "${#MACON_PMPREFS_KEEP}" -gt "$MACON_PMPREFS_KEEP_MAX_DIGITS" ] ||
+    { [ "$MACON_PMPREFS_KEEP" != 0 ] &&
+        [ "${MACON_PMPREFS_KEEP#0}" != "$MACON_PMPREFS_KEEP" ]; }; then
     MACON_PMPREFS_KEEP=10
 fi
 
