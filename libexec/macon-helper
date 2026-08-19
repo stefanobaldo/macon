@@ -413,8 +413,14 @@ helper_iterate() {
 helper_finish() {
     _d=$1
     _reason=$2
+
+    # EVERY field this function needs is read here, before anything is undone.
+    # The descriptor is unlinked a few lines below and these reads used to sit
+    # after it, which was safe only for as long as the unlink came last.
     _id=$(sess_get "$_d" session_id)
     _started=$(sess_get "$_d" started_at)
+    _user=$(sess_get "$_d" user)
+    _hook=$(sess_get "$_d" hook_end)
 
     # Restore FIRST. A hung or broken hook must never be able to delay the
     # safety action (spec 9.3), and neither must a bookkeeping failure -- nor an
@@ -423,6 +429,30 @@ helper_finish() {
     if ! snap_restore; then
         macon_warn "restore reported a failure while ending the session ($_reason)"
     fi
+
+    # And unlink IMMEDIATELY, because under launchd this function is no longer
+    # the last thing that ever happens. A helper killed after the restore is
+    # respawned by KeepAlive; the respawn finds a descriptor that is still
+    # present and still valid, helper_watch takes its "valid" case, and the
+    # session ends a SECOND time -- a second index row, since rec_close_session
+    # appends with no dedupe, and a second --hook-end, which is arbitrary user
+    # code with side effects. Reproduced on the real machine: with a hook that
+    # sleeps ten seconds, killing the helper mid-hook ran the hook twice,
+    # overlapping, and wrote two rows for one session id.
+    #
+    # The window cannot be closed, only shrunk: something has to be last. What
+    # sets its width is the distance from the restore to this line, and that is
+    # now two calls rather than a bookkeeping write plus a hook with a
+    # thirty-second timeout.
+    #
+    # It cannot move ABOVE snap_restore, which would trade a duplicate ending
+    # for a lost one: a kill in that window would leave the machine armed with
+    # no descriptor, which is helper_watch's "absent" case -- exit 0, no
+    # respawn, and a Mac that cannot sleep until the next macon command or the
+    # next boot. A session recorded twice is a wart; a session nothing ends is
+    # the failure this project exists to prevent.
+    rm -f "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
+        "$(helper_offac_path)" "$(helper_lidstate_path)"
 
     # Bookkeeping cannot fail the session: the restore above has already
     # happened, and this is the same close-out the CLI performs when `off` ends
@@ -439,18 +469,18 @@ helper_finish() {
         macon_warn "a session ended ($_reason) but its descriptor was unreadable; not recorded"
     fi
 
-    _hook=$(sess_get "$_d" hook_end)
+    # Last, and from the values read at the top: the descriptor is gone by now.
+    # A hook is the slowest thing here and the only one that runs code nobody
+    # in this repository wrote, which is exactly why it no longer sits inside
+    # the window a respawn can re-enter.
     if [ -n "$_hook" ]; then
         # The reason is exported into the hook's own shell rather than
         # prefixed onto it: a prefix applies to the first command of the hook
         # only, and a hook is as likely to be a pipeline or a list as a single
         # command. The value is one of macon_decide's fixed literals.
-        helper_run_as_user "$(sess_get "$_d" user)" "$MACON_HOOK_TIMEOUT" \
+        helper_run_as_user "$_user" "$MACON_HOOK_TIMEOUT" \
             "MACON_REASON=$_reason; export MACON_REASON; $_hook" >/dev/null 2>&1 || :
     fi
-
-    rm -f "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
-        "$(helper_offac_path)" "$(helper_lidstate_path)"
 }
 
 # When the display was last blanked. A plain variable, unlike the off-AC

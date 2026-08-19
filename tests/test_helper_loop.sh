@@ -332,7 +332,7 @@ fake_set power_source ac
 # --- ending the session -----------------------------------------------------
 
 setup_desc
-sess_set "$D" hook_end "cp '$MACON_STATE/fake/sleep_disabled' '$MACON_STATE/hook_saw'; printf '%s\n' \"\$MACON_REASON\" > '$MACON_STATE/hook_reason'"
+sess_set "$D" hook_end "cp '$MACON_STATE/fake/sleep_disabled' '$MACON_STATE/hook_saw'; printf '%s\n' \"\$MACON_REASON\" > '$MACON_STATE/hook_reason'; { test -f '$D' && printf 'yes\n' || printf 'no\n'; } > '$MACON_STATE/hook_desc'"
 rec_append_sample "$ID" 1700000300 Nominal yes 80
 rec_append_sample "$ID" 1700000600 Serious yes 74
 fake_set sleep_disabled yes
@@ -357,6 +357,17 @@ assert_eq "no" "$(cat "$MACON_STATE/hook_saw")" \
     "the end hook observes a machine that is already restored"
 assert_eq "done" "$(cat "$MACON_STATE/hook_reason")" \
     "the end hook is told why the session ended"
+
+# The window a respawn can re-enter, and the reason the unlink moved up. Under
+# launchd, helper_finish is no longer the last thing that ever happens: a helper
+# killed while the descriptor is still on disk is respawned by KeepAlive, finds
+# a descriptor that is still valid, and ends the session a SECOND time -- a
+# second index row and a second run of the user's hook. Reproduced on the real
+# machine, with a hook that slept ten seconds: two overlapping hook runs and two
+# rows for one session id. The hook is the slowest step and the only one running
+# code nobody here wrote, so it is the one that must sit outside the window.
+assert_eq "no" "$(cat "$MACON_STATE/hook_desc")" \
+    "the end hook runs after the descriptor is unlinked, not inside the respawn window"
 
 _row=$(rec_sessions 0 | head -1)
 assert_eq "$ID" "$(printf '%s' "$_row" | cut -f1)" "the session lands in the index"
