@@ -171,8 +171,11 @@ touches it.
 
     sh uninstall.sh
 
-It refuses while a session is live or a snapshot is unrestored, rather than removing
-the only thing that knows how to put your settings back.
+It refuses while a session is live, while a session descriptor is still on disk, or
+while this Mac reports that sleep is disabled — the three states in which removing
+macon would leave your settings changed with nothing left to change them back. Run
+`macon off` first, then uninstall. Your snapshot is kept either way: one is left
+behind by every session that ends on its own, and it is never a reason to refuse.
 
 It boots the helper daemon out before it removes the CLI and the root helper, and
 stops there if `launchd` still has the job — deleting those files underneath a
