@@ -10,38 +10,39 @@ assignees: ''
 
 <!-- What you expected, and what happened instead. -->
 
+## Steps to reproduce
+
+<!-- From a machine at rest, with the exact commands. If you cannot reproduce it
+     deliberately, say what you were doing when it happened. -->
+
+1.
+2.
+
 ## Machine
 
-macon is verified on one configuration and unverified everywhere else, so this
-section decides whether a report is reproducible at all. Please paste the real
-output rather than describing it.
-
-**macOS version** — `sw_vers`
-
-```
-```
-
-**Chip** — `sysctl -n machdep.cpu.brand_string`
+macon is verified on one configuration and unverified everywhere else. Please
+paste the real output of `sw_vers` and `sysctl -n machdep.cpu.brand_string`.
 
 ```
 ```
 
 ## The command
 
-The exact `macon` command you ran, with every flag, unedited.
+<!-- The exact macon command you ran, with every flag, unedited. -->
 
 ```sh
 ```
 
 ## State
 
-**`macon status`** — run it as soon as you notice the problem.
+<!-- `macon status`, run as soon as you notice the problem. It reports the
+     version too, which is why it is asked for even when the problem is
+     elsewhere. -->
 
 ```
 ```
 
 ## Anything else
 
-<!-- Whether the machine was on AC power, whether the lid was closed, whether
-     the failsafe is installed (`macon failsafe status`), and anything else
-     that seems relevant. -->
+<!-- On AC power? Lid closed? Is the failsafe installed
+     (`macon failsafe status`)? Anything else that seems relevant. -->
