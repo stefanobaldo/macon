@@ -45,6 +45,11 @@ failsafe against root's state directory instead of yours.
     macon status                # what is happening
     macon report --out ~/n.html # HTML report of past nights
 
+Run these as yourself too, never with `sudo`. macon asks for a password at the
+steps that need root, and it runs your `--busy-check` and hooks as you — started
+under `sudo`, it would run them as root instead, and `macon on` refuses rather
+than do that.
+
 End the session as soon as the work finishes, instead of waiting out the clock:
 
     macon run --max 12 -- ./nightly-job.sh        # ends when the process exits
