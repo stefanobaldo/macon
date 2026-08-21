@@ -11,6 +11,36 @@ cut when it has been, and is the first version anyone else is meant to install.
 
 ## [Unreleased]
 
+### Fixed
+
+- `macon on` no longer stops on an interactive prompt before anything is armed.
+  A session armed with `sudo` left the power snapshot in the user's own state
+  directory owned by root, and it outlives the session — only `macon off` and
+  the boot failsafe consume one, so the ordinary ending leaves it behind. The
+  next unprivileged `macon on` renamed over a file it could not write, which
+  BSD `mv` asks about whenever it is run from a terminal; declining failed the
+  arm, and the refusal said the machine already looked modified, about a machine
+  that could sleep and reported no session. The rename no longer asks, and every
+  failure path now removes the temporary file it wrote — a declined attempt used
+  to leave one behind each time.
+- A refused arm now says which refusal it is. Taking the snapshot can fail three
+  ways — the machine already looks modified, the current values cannot be read,
+  or the snapshot cannot be written — and all three printed the first of those
+  messages, sending users to `macon off` for a session that did not exist.
+
+### Changed
+
+- `macon on` and `macon run` refuse to run as root. macon escalates for the
+  steps that need it and is meant to be run as yourself. Under `sudo` it
+  recorded root as the session owner, so the helper ran the user's own
+  `--busy-check` and hooks as root rather than de-privileged, and it left the
+  power snapshot in the user's state directory owned by root.
+- `macon failsafe install` refuses to run as root, for the reason `install.sh`
+  already did: `sudo` discards an exported `MACON_STATE`, so the boot failsafe
+  would be registered against the default state directory instead of the
+  configured one — and would look for the snapshot in the wrong place at the one
+  moment it is the only thing left to restore the machine.
+
 ## [0.1.0-rc.2] - 2026-08-19
 
 ### Fixed
