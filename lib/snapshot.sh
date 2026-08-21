@@ -45,6 +45,17 @@ snap_looks_active() {
         [ "$(plat_pmset_read powernap)" = "0" ]
 }
 
+# Refuses with a DIFFERENT rc per reason, because the caller's advice differs by
+# reason and there is no second way for it to learn which one happened:
+#
+#   1  the machine already looks modified   -- `macon off`, or restore by hand
+#   2  the current values could not be read -- pmset itself is not answering
+#   3  the snapshot could not be written    -- a question of who owns the file
+#
+# One rc for all three made bin/macon print the first of them whichever had
+# actually happened, so a user whose snapshot was merely unwritable was told
+# their machine looked modified -- about a machine they could see was not.
+# The rc carries the reason, the way snap_restore's already does.
 snap_save() {
     if snap_looks_active; then
         macon_warn "refusing to snapshot: the machine already looks modified"
@@ -62,12 +73,12 @@ snap_save() {
     for _v in "$_sleep" "$_disksleep" "$_powernap"; do
         if ! _snap_is_number "$_v"; then
             macon_warn "refusing to snapshot: could not read the current power values"
-            return 1
+            return 2
         fi
     done
 
     _dir=$(_snap_dir)
-    mkdir -p "$_dir" || return 1
+    mkdir -p "$_dir" || return 3
 
     # Write to a temp file in the same directory and rename over the target.
     # Redirecting straight at the real path truncates it before the write is
@@ -79,9 +90,29 @@ snap_save() {
         printf 'powernap=%s\n' "$_powernap"
     } > "$_tmp"; then
         rm -f "$_tmp"
-        return 1
+        macon_warn "could not write a snapshot in $_dir"
+        return 3
     fi
-    mv "$_tmp" "$(snap_path)"
+
+    # -f, and it is not tidiness. A session armed under sudo used to leave a
+    # ROOT-OWNED snapshot in the user's own state directory, and it outlives the
+    # session: only `macon off` and the boot failsafe consume one, so the
+    # ordinary ending leaves it behind. The next unprivileged arm renames over a
+    # file it cannot write, and BSD mv ASKS before doing that -- but only when
+    # stdin is a terminal, which is exactly how `macon on` is documented to be
+    # run. Answering no failed the arm; answering nothing at all, in a script,
+    # replaced the file silently. -f is what makes the two agree, and this
+    # rename is macon replacing its own state file, which is never a question
+    # worth stopping an arm to ask.
+    #
+    # The cleanup is here as well as on the write path above: the rename is the
+    # other way this can fail, and it fails with the temp file already on disk.
+    # Every declined arm used to leave one.
+    if ! mv -f "$_tmp" "$(snap_path)"; then
+        rm -f "$_tmp"
+        macon_warn "could not replace the snapshot at $(snap_path)"
+        return 3
+    fi
 }
 
 # Echoes the pmset argument list, e.g. "sleep 1 disksleep 10 powernap 1".
