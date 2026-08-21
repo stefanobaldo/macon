@@ -131,6 +131,27 @@ assert_eq "0" "$(count_snap_tmp)" "and the failed rename leaves no temporary fil
 chmod 0755 "$(snap_path)"
 rm -rf "$(snap_path)"
 
+# The same obstruction, WRITABLE. `mv` treats an existing directory as somewhere
+# to move into rather than something to replace, so the rename succeeded, the
+# temp file landed inside it, and snap_save -- whose last command that rename
+# was -- returned 0. The CLI then printed `saved original power state to <path>`
+# and armed with no snapshot at all: snap_exists asks for a regular file. The
+# invariant survived it, because snap_restore clears disablesleep first and
+# unconditionally, but the rest of the power profile was never put back.
+#
+# The read-only case above is the same shape and could not catch this: it fails
+# at the write, before the question this asserts is even reached.
+rm -f "$(snap_path)"
+mkdir -p "$(snap_path)"
+snap_save 2>/dev/null
+RC=$?
+assert_eq "3" "$RC" "a writable directory in the snapshot's place refuses with rc 3"
+assert_fail "and no snapshot is reported to exist" snap_exists
+assert_eq "0" "$(count_snap_tmp)" "and it leaves no temporary file behind"
+assert_eq "0" "$(find "$(snap_path)" -type f | grep -c .)" \
+    "nor one hidden inside the directory it refused"
+rm -rf "$(snap_path)"
+
 # The other two refusals never write a temp file at all, and this says so
 # rather than assuming it: they are the paths the cleanup does NOT cover.
 fake_set sleep_disabled yes

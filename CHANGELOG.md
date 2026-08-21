@@ -13,6 +13,15 @@ cut when it has been, and is the first version anyone else is meant to install.
 
 ### Fixed
 
+- `macon on` no longer reports that it saved a power snapshot when it did not.
+  With a writable directory standing where the snapshot goes, the rename that
+  writes it moved the temporary file *into* that directory and reported success,
+  so the session armed with no snapshot at all and the CLI said otherwise. The
+  power configuration was still safe to leave — the restore clears
+  `disablesleep` first and unconditionally, so the Mac kept its ability to
+  sleep — but `sleep`, `disksleep` and `powernap` were never put back. A path
+  that is not a regular file is now refused before the rename, with the same
+  message about ownership the other write failures already had.
 - `macon on` no longer stops on an interactive prompt before anything is armed.
   A session armed with `sudo` left the power snapshot in the user's own state
   directory owned by root, and it outlives the session — only `macon off` and

@@ -94,6 +94,25 @@ snap_save() {
         return 3
     fi
 
+    # `mv` treats an existing DIRECTORY as a destination to move into rather
+    # than something to replace. The rename then succeeds, the temp file lands
+    # inside it, and this function -- whose last command that rename is --
+    # returns 0 over a snapshot that was never written. snap_exists asks for a
+    # regular file, so the caller printed `saved original power state` and armed
+    # without one; the invariant survived, because snap_restore clears
+    # disablesleep first and unconditionally, but the rest of the power profile
+    # was never put back.
+    #
+    # Refused BEFORE the rename rather than checked after it: once mv has moved
+    # the file into the directory, `$_tmp` no longer names it and the cleanup
+    # below cannot reach it. A dangling symlink is not caught by `-e` and is not
+    # meant to be -- mv replaces the link itself, which is a file.
+    if [ -e "$(snap_path)" ] && [ ! -f "$(snap_path)" ]; then
+        rm -f "$_tmp"
+        macon_warn "the snapshot path is not a regular file: $(snap_path)"
+        return 3
+    fi
+
     # -f, and it is not tidiness. A session armed under sudo used to leave a
     # ROOT-OWNED snapshot in the user's own state directory, and it outlives the
     # session: only `macon off` and the boot failsafe consume one, so the
