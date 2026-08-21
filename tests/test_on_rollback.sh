@@ -431,6 +431,66 @@ assert_fail "and nothing was applied" plat_sleep_disabled
 assert_fail "and no snapshot was taken" snap_exists
 : > "$MACON_HELPER_PLIST"
 
+# --- arming as root is refused ----------------------------------------------
+#
+# macon escalates per operation and is documented to be run as yourself. Run
+# under sudo anyway, arming was not refused: it recorded root as the session
+# owner, so the helper ran the user's own --busy-check and hooks as root -- the
+# one thing the privilege split exists to prevent -- and it left the power
+# snapshot in the user's state directory owned by root, where the next
+# unprivileged arm could not replace it without asking.
+#
+# The uid is read through cli_uid so the branch that matters is reachable by a
+# suite that is not root. A shell function and not an environment variable:
+# a variable would be an override anyone could set under sudo to defeat exactly
+# this.
+
+assert_ok "an unprivileged uid may arm" \
+    cli_check_not_root 501 'macon on' 'because reasons'
+assert_fail "uid 0 may not" cli_check_not_root 0 'macon on' 'because reasons'
+
+# Fails CLOSED on a uid it could not read: `[ "" -eq 0 ]` does not answer false,
+# it errors -- so an unreadable uid must be refused rather than allowed through.
+# An empty $(id -u) is not hypothetical: a sanitised PATH with no id on it
+# produces one. Ten digits is the whole range of a 32-bit uid_t.
+assert_fail "an empty uid is refused, not allowed" \
+    cli_check_not_root '' 'macon on' 'because reasons'
+assert_fail "a non-numeric uid is refused" \
+    cli_check_not_root root 'macon on' 'because reasons'
+assert_fail "an absurdly long uid is refused" \
+    cli_check_not_root 99999999999999999999 'macon on' 'because reasons'
+
+OUT=$(cli_check_not_root 0 'macon on' 'the reason it cannot' 2>&1) || :
+assert_contains "$OUT" "macon on" "the refusal names the command it refused"
+assert_contains "$OUT" "the reason it cannot" "and the reason that command has"
+OUT=$(cli_check_not_root '' 'macon on' 'the reason it cannot' 2>&1) || :
+assert_contains "$OUT" "user id" "an unreadable uid says so rather than blaming sudo"
+
+# And the guard is wired into the path that arms, ahead of everything that
+# mutates -- the orphan heal included, which runs inside preflight and restores.
+clean_machine
+rm -f "$(snap_path)"
+OPT_ALLOW_BATTERY=0
+OPT_NO_FAILSAFE=0
+# shellcheck disable=SC2317,SC2329
+cli_uid() { printf '0\n'; }
+OUT=$( (cli_preflight) 2>&1 )
+assert_contains "$OUT" "macon on" "preflight refuses to arm as root"
+assert_contains "$OUT" "sudo" "and says how the command was reached"
+assert_fail "nothing was applied" plat_sleep_disabled
+assert_fail "and no snapshot was taken" snap_exists
+
+# `macon run` arms too, and the refusal names the verb the user typed rather
+# than the one that happens to share the guard.
+OUT=$( (cli_preflight 'macon run') 2>&1 )
+assert_contains "$OUT" "macon run" "and names 'macon run' when that is what arms"
+
+# shellcheck disable=SC2317,SC2329
+cli_uid() { id -u; }
+OUT=$( (cli_preflight) 2>&1 )
+assert_contains "$OUT" "saved original power state" \
+    "and an unprivileged uid still arms"
+
 # --- the descriptor is refused ----------------------------------------------
 #
 # `arm` is synchronous and checked, so a descriptor this machine cannot use is

@@ -339,6 +339,48 @@ cli_check_environment() {
     fi
 }
 
+# The invoking user's id, behind a function so the refusal below can be driven
+# to its interesting branch by a suite that is not root -- the same gap
+# plat_needs_sudo and helper_needs_sudo both work around by being pure
+# predicates. A FUNCTION and not an environment variable, deliberately: a
+# variable would be an override anyone could set under sudo to defeat the one
+# check that exists to catch sudo.
+cli_uid() {
+    id -u
+}
+
+# Refuses a command that must not run as root, and says which command and why.
+#
+# Both call sites reach it for different reasons and a shared wording would be
+# useless at either, so the command and the reason are arguments. It warns and
+# returns rather than calling macon_die, for two reasons: the refusal is three
+# lines rather than one, and a function that exits cannot be asserted on by a
+# suite that has to survive calling it.
+#
+# The uid is a parameter, and it FAILS CLOSED. `[ "" -eq 0 ]` does not answer
+# false, it errors and exits 2 -- so an unreadable uid would take the "not root"
+# branch and allow exactly what this refuses. An empty $(id -u) is not
+# hypothetical: a sanitised PATH with no id on it produces one. Ten digits is
+# the whole range of a 32-bit uid_t. install.sh's install_check_not_root guards
+# the same three shapes for the same reason.
+cli_check_not_root() {
+    case "$1" in
+        '' | *[!0-9]*)
+            macon_warn "could not read the current user id; refusing to run '$2'"
+            return 1
+            ;;
+    esac
+    if [ "${#1}" -gt 10 ]; then
+        macon_warn "could not read the current user id; refusing to run '$2'"
+        return 1
+    fi
+    [ "$1" -eq 0 ] || return 0
+    macon_warn "do not run '$2' as root."
+    macon_warn "$3"
+    macon_warn "re-run it as yourself: macon runs sudo for the steps that need root."
+    return 1
+}
+
 # Progress on stdout, unless --quiet asked for none.
 #
 # What it does NOT silence is the point. macon_warn and macon_die write to
@@ -590,6 +632,23 @@ cli_new_desc_path() {
 # every refusal here is a macon_die -- it exits, so there is no return path on
 # which the caller could clean up.
 cli_preflight() {
+    # First, ahead of everything that mutates -- the orphan heal below included,
+    # which restores. macon escalates per operation and is documented to be run
+    # as yourself; run under sudo anyway, arming was not refused, and it went
+    # wrong in two ways at once. The descriptor records `user` from $(id -un),
+    # so it recorded root, and the helper de-privileges the user's --busy-check
+    # and hooks by that name -- meaning it ran them as root, which is the one
+    # thing the privilege split exists to prevent. And the power snapshot landed
+    # in the user's own state directory owned by root, where it outlives the
+    # session and the next unprivileged arm has to replace a file it does not
+    # own.
+    #
+    # `run` arms too, so the verb is a parameter: a refusal that names a command
+    # the user did not type is a refusal they have to translate.
+    cli_check_not_root "$(cli_uid)" "${1:-macon on}" \
+        "under sudo it records root as the session owner, so your --busy-check and hooks would run as root, and the power snapshot is left in your state directory owned by root." ||
+        exit 1
+
     if sess_helper_alive; then
         macon_die "a session is already active; run 'macon off' first"
     fi
@@ -1307,7 +1366,7 @@ cli_cmd_run() {
     OPT_HOURS=$OPT_MAX
 
     # Everything that can refuse, before the command exists.
-    cli_preflight
+    cli_preflight 'macon run'
 
     # Drop the options and the separator; what remains is the command, still as
     # the arguments the user actually typed. Running it through `sh -c` on a
@@ -1421,6 +1480,21 @@ cli_explain_failsafe_blockers() {
 cli_cmd_failsafe() {
     case "${1:-status}" in
         install)
+            # Ahead of the first sudo, and for the reason install.sh refuses a
+            # root installer: the plist this writes names MACON_STATE, and it
+            # reads that value from its OWN environment -- but sudo DISCARDS an
+            # exported MACON_STATE. Registered under sudo, the boot failsafe
+            # therefore looks for the snapshot in the default state directory
+            # rather than the configured one, at the one moment it is the only
+            # thing left that can restore the machine. Dropping back to
+            # SUDO_USER cannot recover the value either; it is already gone.
+            #
+            # Before the sudo rather than after: a refusal that arrives once the
+            # password has been typed has already cost the user the password.
+            cli_check_not_root "$(cli_uid)" 'macon failsafe install' \
+                "sudo discards an exported MACON_STATE, so the boot failsafe would be registered against the default state directory instead of yours." ||
+                exit 1
+
             # Through a temporary file rather than `render | sudo tee`, which
             # reports TEE's status and not the renderer's: a render that died
             # halfway left the pipeline exiting 0 over a truncated root-owned

@@ -416,4 +416,31 @@ assert_contains "$V" "<string>$REPO_DIR/libexec/macon-helper</string>" \
 assert_eq "$EXPECT" "$V" \
     "and the verb is that renderer, not a second copy of it"
 
+# --- installing the boot failsafe as root is refused ------------------------
+#
+# The same reason install.sh refuses a root installer, reached through a second
+# door. The plist this verb writes names MACON_STATE, and it reads that value
+# from its own environment -- but sudo DISCARDS an exported MACON_STATE, so
+# under sudo the boot failsafe is registered against the default state directory
+# rather than the one the user configured. The job then looks for the snapshot
+# in the wrong place, at the one moment it is the only thing left to restore the
+# machine.
+#
+# Refused before the first sudo, which is what the recorder asserts: a refusal
+# that arrives after the password prompt has already cost the user the password.
+
+SUDO_LOG_ROOT="$MACON_STATE/sudo-root"
+SUDO_LOG=$SUDO_LOG_ROOT
+: > "$SUDO_LOG"
+# shellcheck disable=SC2317,SC2329
+cli_uid() { printf '0\n'; }
+OUT=$( (cli_cmd_failsafe install) 2>&1 ) || :
+assert_contains "$OUT" "macon failsafe install" "installing as root is refused"
+assert_contains "$OUT" "MACON_STATE" "and names the value sudo discards"
+assert_eq "" "$(cat "$SUDO_LOG")" "and the refusal arrives before the first sudo"
+assert_fail "so nothing was written to the plist path" test -s "$MACON_FS_PLIST"
+
+# shellcheck disable=SC2317,SC2329
+cli_uid() { id -u; }
+
 teardown_state
