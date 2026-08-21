@@ -550,7 +550,7 @@ install_main() {
         printf 'macon: Anyone who can write there can replace the root helper.\n' >&2
     fi
 
-    printf 'installing macon into %s (sudo will ask for your password)\n' "$MACON_PREFIX"
+    printf 'installing macon into %s (sudo may ask for your password)\n' "$MACON_PREFIX"
     sudo sh "$SRC_DIR/install.sh" --install-files "$MACON_PREFIX" || exit 1
 
     printf 'installed. registering the boot failsafe...\n'
