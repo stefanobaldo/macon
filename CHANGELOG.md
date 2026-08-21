@@ -13,6 +13,12 @@ cut when it has been, and is the first version anyone else is meant to install.
 
 ### Fixed
 
+- `install.sh` no longer states that sudo will ask for a password. It is the only
+  line in the project that promised a prompt, and it is wrong wherever sudo does
+  not ask: a `NOPASSWD` rule, a timestamp still warm from an earlier `sudo`, or
+  Touch ID configured for sudo, which asks for a fingerprint instead. The rest of
+  the project describes the mechanism rather than the prompt, and this line now
+  says the prompt *may* appear.
 - `macon on` no longer reports that it saved a power snapshot when it did not.
   With a writable directory standing where the snapshot goes, the rename that
   writes it moved the temporary file *into* that directory and reported success,
