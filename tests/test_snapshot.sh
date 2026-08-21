@@ -80,6 +80,108 @@ assert_fail "snap_save refuses a non-numeric reading" snap_save
 assert_eq "sleep 1 disksleep 10 powernap 1" "$(snap_restore_args)" \
     "the previous snapshot survived the second refused save"
 
+# --- the refusal says WHICH refusal it is -----------------------------------
+#
+# snap_save has three ways to fail and exactly one caller, and the advice
+# differs by reason: a machine that already looks modified is told to run
+# `macon off`, an unreadable pmset is a tool problem, and a snapshot that could
+# not be written is a question of who owns the file. One rc for all three made
+# the CLI print the first of those three whichever had happened -- a refusal
+# describing a machine the user could see was not in that state. The rc carries
+# the reason, the way snap_restore's already does.
+
+# Every temporary file this module can leave behind, counted the way the
+# pmprefs backups are: pathname expansion, no ls, no subshell parsing.
+count_snap_tmp() {
+    _n=0
+    for _f in "$MACON_STATE"/snapshot.tmp.*; do
+        [ -f "$_f" ] || continue
+        _n=$((_n + 1))
+    done
+    printf '%s\n' "$_n"
+}
+
+fake_set sleep 1
+fake_set disksleep 10
+fake_set powernap 1
+fake_set sleep_disabled yes
+snap_save 2>/dev/null
+RC=$?
+assert_eq "1" "$RC" "an already-modified machine refuses with rc 1"
+
+fake_set sleep_disabled no
+fake_set powernap ""
+snap_save 2>/dev/null
+RC=$?
+assert_eq "2" "$RC" "an unreadable power value refuses with rc 2"
+
+# The values read fine and the RENAME is what fails -- the path reached with the
+# temp file already on disk, and the one that used to leak it. A read-only
+# directory standing where the snapshot goes is a destination mv can neither
+# replace nor move into, while the state directory itself stays writable so the
+# temp file is still created first.
+fake_set powernap 1
+rm -f "$(snap_path)"
+mkdir -p "$(snap_path)"
+chmod 0555 "$(snap_path)"
+snap_save 2>/dev/null
+RC=$?
+assert_eq "3" "$RC" "a snapshot that cannot be written refuses with rc 3"
+assert_eq "0" "$(count_snap_tmp)" "and the failed rename leaves no temporary file"
+chmod 0755 "$(snap_path)"
+rm -rf "$(snap_path)"
+
+# The other two refusals never write a temp file at all, and this says so
+# rather than assuming it: they are the paths the cleanup does NOT cover.
+fake_set sleep_disabled yes
+snap_save 2>/dev/null || :
+assert_eq "0" "$(count_snap_tmp)" "the modified-machine refusal writes no temporary file"
+fake_set sleep_disabled no
+fake_set powernap ""
+snap_save 2>/dev/null || :
+assert_eq "0" "$(count_snap_tmp)" "nor does the unreadable-value one"
+fake_set powernap 1
+
+# --- replacing a snapshot the caller cannot write ---------------------------
+#
+# A session armed under `sudo` leaves a root-owned snapshot in the user's own
+# state directory, and it OUTLIVES the session: only `macon off` and the boot
+# failsafe consume one, so the ordinary ending leaves it there. The next
+# unprivileged arm then renames over a file it cannot write, and BSD mv asks
+# before doing that -- answering no failed the arm, and the refusal named a
+# modified machine that was not modified.
+#
+# Asserted on the CALL rather than on the outcome, for the reason plat_needs_sudo
+# and helper_needs_sudo are both pure predicates: mv only asks when stdin is a
+# terminal, a suite has none, and a test whose subject appears only under a tty
+# would pass on a broken tree in CI and fail on the maintainer's machine. So the
+# recorder below asserts that the rename cannot stop to ask, and the assertions
+# after it cover what a suite CAN observe -- that the file is replaced and
+# nothing is left behind.
+MV_LOG="$MACON_STATE/mv-calls"
+STUB_BIN="$MACON_STATE/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/mv" <<'MVEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MACON_STATE/mv-calls"
+exec /bin/mv "$@"
+MVEOF
+chmod 755 "$STUB_BIN/mv"
+PATH="$STUB_BIN:$PATH"
+export PATH
+
+rm -f "$(snap_path)"
+assert_ok "a snapshot exists to be replaced" snap_save
+chmod 0444 "$(snap_path)"
+fake_set disksleep 20
+: > "$MV_LOG"
+assert_ok "and is replaced even though the caller cannot write it" snap_save
+assert_eq "-f" "$(cut -d' ' -f1 < "$MV_LOG")" "the rename cannot stop to ask"
+assert_eq "sleep 1 disksleep 20 powernap 1" "$(snap_restore_args)" \
+    "the new values are what landed"
+assert_eq "0" "$(count_snap_tmp)" "and no temporary file survived the rename"
+fake_set disksleep 10
+
 # Values read back off disk become pmset arguments, so a malformed field is
 # dropped rather than passed through.
 printf 'sleep=1\ndisksleep=oops\npowernap=1\n' > "$(snap_path)"

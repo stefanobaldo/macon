@@ -669,9 +669,25 @@ cli_preflight() {
     # to arm straight over the top, because a snapshot existed and nothing
     # looked again. It now refuses, which is the right direction for a machine
     # in a state macon cannot explain.
-    if ! snap_save; then
-        macon_die "the machine already looks modified and no fresh snapshot could be taken; run 'macon off', or restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
-    fi
+    #
+    # One message per reason, because snap_save fails three ways and the answer
+    # differs at each. Told about a modified machine, a user whose snapshot was
+    # merely unwritable went looking for a session that was not there -- the
+    # machine could sleep, `macon status` said `session: none`, and the message
+    # described none of it.
+    snap_save
+    case $? in
+        0) ;;
+        1)
+            macon_die "the machine already looks modified and no fresh snapshot could be taken; run 'macon off', or restore the values you want by hand and try again -- macOS exposes no defaults to reconstruct them"
+            ;;
+        2)
+            macon_die "the current power values could not be read, so there is nothing safe to record as the original state; check that 'pmset -g custom' answers, and try again"
+            ;;
+        *)
+            macon_die "the power snapshot could not be written to $(snap_path); check who owns that file and the directory holding it -- macon will not arm without a snapshot it just took"
+            ;;
+    esac
     cli_out 'saved original power state to %s\n' "$(snap_path)"
 
     # Announced only when the directory is still there. snap_backup_plists
