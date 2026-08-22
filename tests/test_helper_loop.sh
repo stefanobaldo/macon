@@ -1040,4 +1040,36 @@ else
     chmod 0700 "$(sess_run_dir)"
 fi
 
+# --- the session's end takes its files with it --------------------------------
+#
+# They belong to the session, so its end owns them. Left behind they are litter
+# in a directory that already accumulates pmprefs-* dirs.
+
+_d=$(sess_desc_path)
+mkdir -p "$(dirname "$_d")"
+_sent="$MACON_STATE/t-fin.done"
+sess_set "$_d" session_id t-fin
+sess_set "$_d" started_at "$(macon_now)"
+sess_set "$_d" user "$(id -un)"
+sess_set "$_d" sentinel_path "$_sent"
+: > "$_sent"
+: > "${_sent%.done}.pending"
+
+helper_finish "$_d" 'done'
+
+assert_ok "the sentinel is gone after the session ends" test ! -e "$_sent"
+assert_ok "and so is the pending file" test ! -e "${_sent%.done}.pending"
+
+# And a descriptor that lost the field deletes nothing relative to the
+# directory the helper happens to be standing in: `${_sent%.done}.pending` on an
+# empty field is the RELATIVE path `.pending`, and this one is handed to `rm`.
+_cwd_pend=$(mktemp -d)
+setup_desc
+sess_set "$D" sentinel_path ""
+: > "$_cwd_pend/.pending"
+( cd "$_cwd_pend" && helper_finish "$D" 'done' ) >/dev/null 2>&1 || :
+assert_ok "a session with no usable sentinel path leaves a stray .pending alone" \
+    test -f "$_cwd_pend/.pending"
+rm -rf "$_cwd_pend"
+
 teardown_state

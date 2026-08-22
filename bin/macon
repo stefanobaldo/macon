@@ -910,8 +910,21 @@ cli_restore_helper_daemon() {
 
 cli_cmd_off() {
     _d=$(sess_desc_path)
+    # Every field read up front, before anything is undone, for the reason
+    # helper_finish's own comment gives: the descriptor is deleted below.
     _id=$(sess_get "$_d" session_id)
     _started=$(sess_get "$_d" started_at)
+
+    # The session's two files, cleared only when the descriptor named a usable
+    # path. `${_sent%.done}.pending` on an empty field is the RELATIVE path
+    # `.pending` -- and `off` on an idle machine, where every field reads empty,
+    # is not an edge case but the command's ordinary use. Without this guard it
+    # would hand `.pending` to rm in whatever directory the user typed it from.
+    _sentpair=
+    _sent=$(sess_get "$_d" sentinel_path)
+    case "$_sent" in
+        /*) _sentpair=yes ;;
+    esac
 
     cli_stop_helper
 
@@ -938,7 +951,12 @@ cli_cmd_off() {
     fi
 
     # After the restore, for the reason cli_stop_helper explains.
-    cli_remove_run_files "$_d" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+    if [ -n "$_sentpair" ]; then
+        cli_remove_run_files "$_d" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
+            "$_sent" "${_sent%.done}.pending"
+    else
+        cli_remove_run_files "$_d" "$(sess_pid_path)" "$(sess_heartbeat_path)"
+    fi
 
     cli_restore_helper_daemon
 
