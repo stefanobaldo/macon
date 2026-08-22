@@ -126,9 +126,6 @@ assert_eq "900" "$MACON_INTERVAL_CEIL" "the CLI enforces the descriptor's ceilin
 
 # --- capture ----------------------------------------------------------------
 
-cli_parse_on 8 --sentinel
-assert_eq "1" "$OPT_SENTINEL" "the sentinel flag is captured"
-
 cli_parse_on 8 --busy-check 'pgrep -q myjob' --max 10 --on-expire extend --extend-by 45
 assert_eq "pgrep -q myjob" "$OPT_BUSY_CHECK" "the busy-check command is captured verbatim"
 assert_eq "45" "$OPT_EXTEND_BY" "the extension step is captured"
@@ -183,6 +180,24 @@ hard_ceiling=99'
 assert_fail "a newline in the warn hook is rejected" \
     cli_parse_on 8 --hook-warn 'true
 hard_ceiling=99'
+
+# --- the sentinel is no longer a flag ----------------------------------------
+#
+# It became a field every session carries, so asking for it is asking for
+# something that is already true. The flag is refused rather than ignored: a
+# script that still passes it was written against a contract that no longer
+# holds, and silently accepting it would hide that until the night it matters.
+
+assert_fail "--sentinel is refused" cli_parse_on 8 --sentinel
+
+# --on-expire extend still needs a source it can POLL. Every session now has a
+# sentinel, so if _has_source counted it this guard would accept everything --
+# and a sentinel nobody writes is indistinguishable from one nobody ever will,
+# which extends to the ceiling every time.
+assert_fail "extend is still refused with no pollable source" \
+    cli_parse_on 8 --on-expire extend --max 9
+assert_ok "extend is accepted with a busy-check" \
+    cli_parse_on 8 --on-expire extend --max 9 --busy-check /usr/bin/true
 
 # --- the usage block --------------------------------------------------------
 #

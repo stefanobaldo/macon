@@ -26,7 +26,6 @@ _macon() {
         '--on-expire[what to do at the soft deadline]:policy:(restore extend)'
         '--extend-by[extension step, in minutes]:minutes:'
         '--busy-check[completion predicate, run as you]:command:'
-        '--sentinel[end when a sentinel file appears]'
         '--hook-end[run after the restore, with MACON_REASON set]:command:'
         '--hook-warn[run before the soft deadline]:command:'
         '--pre-warn[warning lead time, in minutes]:minutes:'

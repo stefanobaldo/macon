@@ -67,13 +67,6 @@ setup_desc
 assert_eq "unknown" "$(helper_probe_busy "$D")" "no completion source probes unknown"
 
 setup_desc
-sess_set "$D" completion sentinel
-sess_set "$D" sentinel_path "$MACON_STATE/s.done"
-assert_eq "yes" "$(helper_probe_busy "$D")" "an absent sentinel means still busy"
-: > "$MACON_STATE/s.done"
-assert_eq "no" "$(helper_probe_busy "$D")" "a present sentinel means finished"
-
-setup_desc
 sess_set "$D" completion process
 sess_set "$D" watch_pid $$
 assert_eq "yes" "$(helper_probe_busy "$D")" "a live wrapped PID means busy"
@@ -135,13 +128,6 @@ sess_set "$D" busy_timeout "30s"
 assert_fail "a non-numeric busy timeout is rejected" helper_validate_desc "$D"
 sess_set "$D" busy_timeout 30
 assert_ok "a complete busy_check descriptor validates" helper_validate_desc "$D"
-
-setup_desc
-sess_set "$D" completion sentinel
-sess_set "$D" sentinel_path "relative/s.done"
-assert_fail "a relative sentinel path is rejected" helper_validate_desc "$D"
-sess_set "$D" sentinel_path "$MACON_STATE/s.done"
-assert_ok "an absolute sentinel path validates" helper_validate_desc "$D"
 
 setup_desc
 sess_set "$D" completion process
@@ -303,7 +289,7 @@ assert_contains "$(fake_calls)" "pmset_apply_ac sleep 1 disksleep 10 powernap 1"
 # --- the poll order, through the loop ---------------------------------------
 
 setup_desc
-sess_set "$D" completion sentinel
+sess_set "$D" completion none
 sess_set "$D" sentinel_path "$MACON_STATE/never.done"
 MACON_FAKE_NOW=1700007200
 assert_eq "end:hard-ceiling" "$(helper_iterate "$D")" \
@@ -689,7 +675,9 @@ arm_snapshot() {
 setup_desc
 sess_set "$D" policy extend
 sess_set "$D" extend_by 600
-sess_set "$D" completion sentinel
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check "test ! -e $MACON_STATE/loop-a.done"
+sess_set "$D" busy_timeout 5
 sess_set "$D" sentinel_path "$MACON_STATE/loop-a.done"
 rm -f "$MACON_STATE/loop-a.done" "$MACON_STATE/loop-a.deadlines"
 arm_snapshot
@@ -716,7 +704,9 @@ assert_fail "the loop returns having cleared the descriptor" test -f "$D"
 setup_desc
 sess_set "$D" policy extend
 sess_set "$D" extend_by 999999
-sess_set "$D" completion sentinel
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check "test ! -e $MACON_STATE/loop-b.done"
+sess_set "$D" busy_timeout 5
 sess_set "$D" sentinel_path "$MACON_STATE/loop-b.done"
 rm -f "$MACON_STATE/loop-b.done"
 arm_snapshot
@@ -733,7 +723,9 @@ assert_eq "1700007200" "$(cat "$MACON_STATE/loop-b.deadline")" \
 # The warning is a courtesy, and a courtesy repeated at every poll for the
 # last hour of a session is a defect.
 setup_desc
-sess_set "$D" completion sentinel
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check "test ! -e $MACON_STATE/loop-c.done"
+sess_set "$D" busy_timeout 5
 sess_set "$D" sentinel_path "$MACON_STATE/loop-c.done"
 sess_set "$D" hook_warn "printf 'x\n' >> '$MACON_STATE/loop-c.warned'"
 sess_set "$D" pre_warn 900
@@ -757,7 +749,9 @@ assert_eq "1" "$(wc -l < "$MACON_STATE/loop-c.warned" | tr -d ' ')" \
 setup_desc
 sess_set "$D" policy extend
 sess_set "$D" extend_by 600
-sess_set "$D" completion sentinel
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check "test ! -e $MACON_STATE/loop-d.done"
+sess_set "$D" busy_timeout 5
 sess_set "$D" sentinel_path "$MACON_STATE/loop-d.done"
 rm -f "$MACON_STATE/loop-d.done"
 arm_snapshot

@@ -144,7 +144,7 @@ sess_validate() {
     esac
 
     case "$(sess_get "$_f" completion)" in
-        none | busy_check | process | sentinel) ;;
+        none | busy_check | process) ;;
         *) macon_warn "descriptor field 'completion' is not a known source"; _ok=1 ;;
     esac
 

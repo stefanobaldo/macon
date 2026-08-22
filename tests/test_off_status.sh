@@ -68,7 +68,8 @@ arm() {
     sess_set "$_d" policy restore
     sess_set "$_d" interval 300
     sess_set "$_d" strikes 2
-    sess_set "$_d" completion sentinel
+    sess_set "$_d" completion busy_check
+    sess_set "$_d" busy_check /usr/bin/true
     sess_set "$_d" user "$(id -un)"
     plat_pmset_disablesleep 1
     plat_pmset_apply_ac sleep 0 disksleep 0 powernap 0
@@ -237,7 +238,7 @@ OUT=$(cli_cmd_status)
 assert_contains "$OUT" "DISABLED" "status reports that the lid is safe to close"
 assert_contains "$OUT" "active" "status reports a live session"
 assert_contains "$OUT" "1h30m" "status reports the time left to the soft deadline"
-assert_contains "$OUT" "sentinel" "status names the completion source"
+assert_contains "$OUT" "busy_check" "status names the completion source"
 assert_contains "$OUT" "80%" "status reports the battery level"
 assert_contains "$OUT" "installed" "status reports the boot failsafe"
 retire_stub_helper

@@ -116,6 +116,14 @@ write_valid
 sess_set "$D" completion telepathy
 assert_fail "an unknown completion source is rejected" sess_validate "$D"
 
+# 'sentinel' was a completion source; it is now an orthogonal field every
+# session carries, so the value must be rejected rather than quietly tolerated
+# in a descriptor written against the old contract. Built from a descriptor
+# that is otherwise valid, so the refusal can only have come from this field.
+write_valid
+sess_set "$D" completion sentinel
+assert_fail "completion=sentinel is no longer a known source" sess_validate "$D"
+
 # The ceiling can never precede the soft deadline.
 write_valid
 sess_set "$D" hard_ceiling 1700001000
