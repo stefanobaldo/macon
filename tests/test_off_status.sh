@@ -571,6 +571,25 @@ assert_contains "$(cli_cmd_status 2>&1)" "countdown" \
 assert_contains "$(cli_cmd_status 2>&1)" "marked finished" \
     "status reports a sentinel waiting for the poll"
 rm -f "$_sent" "$_pend"
+
+# A descriptor with no usable path is reported as having none, and -- the point
+# of the assertion -- no pending file is looked for. `${_sent%.done}.pending` on
+# an empty field is `.pending`, a RELATIVE path, and testing it would read
+# whatever directory the caller happened to be standing in. Proven by planting
+# exactly that file in the working directory and requiring status to ignore it.
+sess_set "$_d" sentinel_path ""
+_cwd_pend=$(mktemp -d)
+printf '%s\n' "$(( $(macon_now) + 300 ))" > "$_cwd_pend/.pending"
+OUT=$(cd "$_cwd_pend" && cli_cmd_status 2>&1)
+assert_contains "$OUT" "no usable path" "status reports an unusable sentinel path as such"
+case "$OUT" in
+    *"finishing at"*) assert_eq "ignored" "read" \
+        "a relative pending path is never tested" ;;
+    *) assert_eq "ignored" "ignored" "a relative pending path is never tested" ;;
+esac
+rm -rf "$_cwd_pend"
+sess_set "$_d" sentinel_path "$_sent"
+
 retire_stub_helper
 
 unset MACON_FAKE_NOW
