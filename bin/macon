@@ -1107,6 +1107,31 @@ cli_cmd_status() {
             _cli_row "session:" "active, with an unreadable deadline"
         fi
         _cli_row "policy:" "$(sess_get "$_d" policy) / completion: $(sess_get "$_d" completion)"
+
+        # The push channel's state, and the only place the path is named --
+        # `macon on` stopped printing it, and the FILE is still the contract for
+        # a consumer that cannot exec macon.
+        #
+        # Parsed HERE and nowhere else: `macon status` is unprivileged, and the
+        # root helper tests the sentinel's existence and never reads either
+        # file's contents (BRIEFING.md section 4).
+        _sent=$(sess_get "$_d" sentinel_path)
+        _pend="${_sent%.done}.pending"
+        if [ -e "$_sent" ]; then
+            _cli_row "finish:" "marked finished -- restoring at the next poll"
+        elif [ -f "$_pend" ]; then
+            _t=$(head -1 "$_pend" 2>/dev/null)
+            if _sess_is_number "$_t" && [ "$_t" -gt "$(macon_now)" ]; then
+                _cli_row "finish:" "finishing at $(date -r "$_t" '+%H:%M')"
+            else
+                # The target is past -- or unreadable, which tells us no more --
+                # and no sentinel arrived, so the child that was going to write
+                # one is gone. Saying nothing here would let the reader believe
+                # a countdown is still running.
+                _cli_row "finish:" "countdown lost -- nothing will write the sentinel"
+            fi
+        fi
+        _cli_row "sentinel:" "$_sent"
     elif sess_orphaned; then
         # Reported, never healed: a read command stays a read command. A status
         # that quietly restored would erase the state it is describing.
