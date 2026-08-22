@@ -11,7 +11,7 @@ _macon() {
     cmd=${COMP_WORDS[1]}
 
     local subcommands='on run off status report saved log failsafe version help'
-    local on_opts='--max --on-expire --extend-by --busy-check --sentinel
+    local on_opts='--max --on-expire --extend-by --busy-check
                    --hook-end --hook-warn --pre-warn --interval
                    --allow-battery --no-failsafe --no-announce --quiet'
 

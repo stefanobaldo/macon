@@ -114,7 +114,6 @@ options for on and run:
   --on-expire restore|extend   what to do at the soft deadline (default: restore)
   --extend-by <minutes>    extension step (default: 30)
   --busy-check <cmd>       completion predicate, run as you; exit 0 means busy
-  --sentinel               enable the sentinel file and print its path
   --hook-end <cmd>         run after the restore, with MACON_REASON set
   --hook-warn <cmd>        run --pre-warn minutes before the soft deadline
   --pre-warn <minutes>     warning lead time (default: 15)
@@ -141,7 +140,6 @@ cli_parse_on() {
     OPT_POLICY=restore
     OPT_EXTEND_BY=30
     OPT_BUSY_CHECK=""
-    OPT_SENTINEL=0
     OPT_HOOK_END=""
     OPT_HOOK_WARN=""
     OPT_PRE_WARN=15
@@ -178,7 +176,6 @@ cli_parse_on() {
             --on-expire)     cli_need_arg "$@" || return 1; OPT_POLICY=$2; shift 2 ;;
             --extend-by)     cli_need_arg "$@" || return 1; OPT_EXTEND_BY=$2; shift 2 ;;
             --busy-check)    cli_need_arg "$@" || return 1; OPT_BUSY_CHECK=$2; shift 2 ;;
-            --sentinel)      OPT_SENTINEL=1; shift ;;
             --hook-end)      cli_need_arg "$@" || return 1; OPT_HOOK_END=$2; shift 2 ;;
             --hook-warn)     cli_need_arg "$@" || return 1; OPT_HOOK_WARN=$2; shift 2 ;;
             --pre-warn)      cli_need_arg "$@" || return 1; OPT_PRE_WARN=$2; shift 2 ;;
@@ -228,12 +225,11 @@ cli_parse_on() {
 
     _has_source=0
     [ -n "$OPT_BUSY_CHECK" ] && _has_source=1
-    [ "$OPT_SENTINEL" -eq 1 ] && _has_source=1
     [ "$OPT_WRAP" -eq 1 ] && _has_source=1
 
     if [ "$OPT_POLICY" = "extend" ]; then
         if [ "$_has_source" -eq 0 ]; then
-            macon_warn "--on-expire extend requires a completion source (--busy-check, --sentinel, or run)"
+            macon_warn "--on-expire extend requires a source macon can poll (--busy-check, or run)"
             return 1
         fi
         if [ -z "$OPT_MAX" ]; then
@@ -798,7 +794,11 @@ cli_start_session() {
     cli_desc_set "$_d" busy_timeout 30
     cli_desc_set "$_d" announce "$OPT_ANNOUNCE"
 
-    # A descriptor holds exactly one completion source, so the order here is a
+    # The pull source: what macon ASKS at every poll. One of three, and the
+    # sentinel is deliberately not among them -- it is a push channel, set
+    # below for every session regardless of what is chosen here.
+    #
+    # A descriptor holds exactly one pull source, so the order here is a
     # precedence rule. The wrapped process comes first because it is the whole
     # of what `run` is -- but a flag the user typed and macon then ignored is
     # how a session ends at a time nobody asked for, so it is said out loud.
@@ -806,27 +806,25 @@ cli_start_session() {
         if [ -n "$OPT_BUSY_CHECK" ]; then
             macon_warn "ignoring --busy-check: 'macon run' watches the command it started"
         fi
-        if [ "$OPT_SENTINEL" -eq 1 ]; then
-            macon_warn "ignoring --sentinel: 'macon run' watches the command it started"
-        fi
         cli_desc_set "$_d" completion process
         cli_desc_set "$_d" watch_pid "$OPT_WATCH_PID"
-        OPT_SENTINEL=0
     elif [ -n "$OPT_BUSY_CHECK" ]; then
         cli_desc_set "$_d" completion busy_check
         cli_desc_set "$_d" busy_check "$OPT_BUSY_CHECK"
-    elif [ "$OPT_SENTINEL" -eq 1 ]; then
-        cli_desc_set "$_d" completion sentinel
-        cli_desc_set "$_d" sentinel_path "${MACON_STATE:-$HOME/.local/state/macon}/$_id.done"
     else
         cli_desc_set "$_d" completion none
     fi
+
+    # The push channel, on every session without exception. This is what makes
+    # `macon done` work whatever the pull source is, and what stops the caller
+    # from having had to predict at arm time that they would want it.
+    cli_desc_set "$_d" sentinel_path \
+        "${MACON_STATE:-$HOME/.local/state/macon}/$_id.done"
 
     sess_validate "$_d" || macon_die "internal error: built an invalid session descriptor"
 
     _soft=$(sess_get "$_d" soft_deadline)
     _hard=$(sess_get "$_d" hard_ceiling)
-    _sentinel=$(sess_get "$_d" sentinel_path)
 
     if ! cli_arm "$_d"; then
         rm -f "$_d"
@@ -837,15 +835,6 @@ cli_start_session() {
     # temporary directory.
     rm -f "$_d"
 
-    if [ "$OPT_SENTINEL" -eq 1 ]; then
-        # Printed even under --quiet, and it is the one exception. This path is
-        # the ONLY place the sentinel is ever named -- `macon status` does not
-        # show it -- so silencing it would not make `--sentinel --quiet` quiet,
-        # it would make it useless. Quiet suppresses macon talking about itself,
-        # not data the user asked for by typing a flag.
-        printf 'sentinel: %s\n' "$_sentinel"
-        cli_out 'write that file when the work is done and macon will restore and sleep.\n'
-    fi
     cli_out 'armed until %s (ceiling %s)\n' \
         "$(date -r "$_soft" '+%H:%M')" \
         "$(date -r "$_hard" '+%H:%M')"

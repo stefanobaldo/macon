@@ -316,7 +316,8 @@ assert_ok "and the directory the message names is on disk" test -d "$BACKUP_DIR"
 
 clean_machine
 MACON_HELPER_CMD="sh '$STUB' \"\$MACON_DESC\""
-assert_ok "on arms a session" try_on 8 --max 12 --interval 60 --sentinel \
+assert_ok "on arms a session" try_on 8 --max 12 --interval 60 \
+    --busy-check /usr/bin/true \
     --on-expire extend --extend-by 45 --pre-warn 20 --hook-end 'true'
 I="$(sess_desc_path)"
 assert_ok "the helper installed its own copy of the descriptor" test -f "$I"
@@ -326,7 +327,9 @@ assert_eq "2700" "$(sess_get "$I" extend_by)" "the extension step is stored in s
 assert_eq "1200" "$(sess_get "$I" pre_warn)" "the warning lead time is stored in seconds"
 assert_eq "60" "$(sess_get "$I" interval)" "the interval is stored as given"
 assert_eq "extend" "$(sess_get "$I" policy)" "the policy is stored"
-assert_eq "sentinel" "$(sess_get "$I" completion)" "the completion source is stored"
+assert_eq "busy_check" "$(sess_get "$I" completion)" "the pull source is stored"
+# The sentinel is no longer selected by a flag: it is on this descriptor
+# because it is on every descriptor, alongside whatever the pull source is.
 assert_eq "$MACON_STATE/$(sess_get "$I" session_id).done" \
     "$(sess_get "$I" sentinel_path)" "the sentinel path is absolute and per-session"
 assert_eq "$(id -un)" "$(sess_get "$I" user)" "the invoking user is recorded"
