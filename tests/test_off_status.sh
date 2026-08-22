@@ -533,5 +533,45 @@ assert_contains "$(cli_cmd_done --grace 600 2>&1)" "ceiling" \
 sess_set "$_d" hard_ceiling "$(( $(macon_now) + 3600 ))"
 unset MACON_DONE_CMD
 
+# --- status reports the sentinel ----------------------------------------------
+#
+# The path left `macon on`, so this is now the only place it is named. It has to
+# be here: the FILE is the contract, for consumers that cannot exec macon.
+#
+# The rows live in the armed-session branch, so the stub helper started above
+# has to still be alive for any of this to be reached.
+assert_ok "the fixture still has a live helper" sess_helper_alive
+
+rm -f "$_sent" "$_pend"
+assert_contains "$(cli_cmd_status 2>&1)" "$_sent" \
+    "status names the sentinel path on an armed session"
+
+# A countdown still running.
+printf '%s\n' "$(( $(macon_now) + 300 ))" > "$_pend"
+assert_contains "$(cli_cmd_status 2>&1)" "finishing at" \
+    "status reports a running countdown"
+
+# A countdown whose child died. The target is past and no sentinel arrived, so
+# nothing is going to write one -- and a status that stayed silent here would
+# let the caller believe the machine is about to sleep when it is not.
+printf '%s\n' "$(( $(macon_now) - 300 ))" > "$_pend"
+assert_contains "$(cli_cmd_status 2>&1)" "countdown" \
+    "status reports a countdown that never landed"
+
+# An unreadable target is a dead countdown too: nothing can be told from it, and
+# the only safe reading of "I cannot tell" is that nothing is coming.
+printf 'soon\n' > "$_pend"
+assert_contains "$(cli_cmd_status 2>&1)" "countdown" \
+    "an unparseable target reads as a countdown that will not land"
+
+# The sentinel is down and the poll is all that is left. It outranks a pending
+# file that is still lying beside it -- the rename is what normally removes one,
+# and `--grace 0` after a `--grace N` leaves both.
+: > "$_sent"
+assert_contains "$(cli_cmd_status 2>&1)" "marked finished" \
+    "status reports a sentinel waiting for the poll"
+rm -f "$_sent" "$_pend"
+retire_stub_helper
+
 unset MACON_FAKE_NOW
 teardown_state
