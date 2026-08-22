@@ -13,29 +13,33 @@ It copies `SKILL.md` into `~/.claude/skills/macon-sentinel/` and does nothing el
 
 ## How it works
 
-Start the session with a sentinel:
+Start the session as you normally would:
 
-    macon on 8 --sentinel
+    macon on 8
 
-macon prints the sentinel's path and exports `MACON_SENTINEL` for the session.
-When the agent has finished everything it was asked to do, it writes that file,
-and macon ends the session at its next poll — restoring your power configuration
-and letting the machine sleep.
+Every session carries a sentinel, so there is nothing to arm and nothing to
+wire. When the agent has finished everything it was asked to do, it runs
+`macon done`, and macon ends the session at its next poll — restoring your power
+configuration and letting the machine sleep.
+
+`macon done` needs no password, which is what lets an agent run it at 03:00 with
+nobody at the keyboard. It waits about two minutes by default so the agent's
+closing message still reaches you; `--grace <seconds>` changes that window.
 
 ## The trade-off, stated plainly
 
-**This is a hint, not a control.** An agent can write the sentinel early because
-it believes it is finished when it is not, or forget to write it at all. Both
+**This is a hint, not a control.** An agent can run `macon done` early because
+it believes it is finished when it is not, or forget to run it at all. Both
 happen.
 
 That is survivable only because the sentinel is the *weakest* signal in the poll
 order, and cannot extend anything:
 
-- Written early, you lose the rest of the night's work. Nothing is left in a
+- Run early, you lose the rest of the night's work. Nothing is left in a
   dangerous state — the machine restores and sleeps, which is the safe direction.
-- Never written, the session ends at its soft deadline exactly as it would have
+- Never run, the session ends at its soft deadline exactly as it would have
   without this integration. You have lost nothing.
-- Written by an agent that has gone wrong in some more creative way, the **hard
+- Run by an agent that has gone wrong in some more creative way, the **hard
   ceiling** is still evaluated before every other signal, including this one. No
   file an agent can write extends a session.
 

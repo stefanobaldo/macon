@@ -11,6 +11,17 @@ cut when it has been, and is the first version anyone else is meant to install.
 
 ## [Unreleased]
 
+### Added
+
+- `macon done` ends a session without a password, from any process that can run
+  a command. It writes a file the root helper is already polling for, which is
+  what makes it work from an unattended job when `macon off` — which restores
+  directly, and so needs root, a tty and a live sudo timestamp — cannot. A
+  `--grace` window, 120 seconds by default, runs alongside the caller's closing
+  output instead of blocking it.
+- `macon status` reports the sentinel's path and whether the session has been
+  marked finished.
+
 ### Fixed
 
 - `install.sh` no longer states that sudo will ask for a password. It is the only
@@ -55,6 +66,18 @@ cut when it has been, and is the first version anyone else is meant to install.
   would be registered against the default state directory instead of the
   configured one — and would look for the snapshot in the wrong place at the one
   moment it is the only thing left to restore the machine.
+- Upgrading macon while a session is armed restores the machine and ends that
+  session. A session started by an older macon carries no sentinel path, and the
+  new root helper refuses a descriptor without one rather than guess at it. The
+  ending is the safe one — the power configuration is put back and the Mac can
+  sleep again — but it happens on its own, without anyone asking for it. Run
+  `macon off` before upgrading if the session matters.
+
+### Removed
+
+- The `--sentinel` flag. Every session now carries a sentinel path, so asking
+  for one asked for something already true. The path is no longer printed when
+  arming; `macon status` names it.
 
 ## [0.1.0-rc.2] - 2026-08-19
 

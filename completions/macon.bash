@@ -10,7 +10,7 @@ _macon() {
     prev=${COMP_WORDS[COMP_CWORD-1]}
     cmd=${COMP_WORDS[1]}
 
-    local subcommands='on run off status report saved log failsafe version help'
+    local subcommands='on run off done status report saved log failsafe version help'
     local on_opts='--max --on-expire --extend-by --busy-check
                    --hook-end --hook-warn --pre-warn --interval
                    --allow-battery --no-failsafe --no-announce --quiet'
@@ -28,7 +28,7 @@ _macon() {
             return
             ;;
         --max | --extend-by | --pre-warn | --interval | --busy-check | \
-        --hook-end | --hook-warn)
+        --hook-end | --hook-warn | --grace)
             return
             ;;
         --out | --session | --since)
@@ -46,6 +46,9 @@ _macon() {
             ;;
         log)
             mapfile -t COMPREPLY < <(compgen -W '--session' -- "$cur")
+            ;;
+        done)
+            mapfile -t COMPREPLY < <(compgen -W '--grace' -- "$cur")
             ;;
         failsafe)
             mapfile -t COMPREPLY < <(compgen -W 'install remove status' -- "$cur")

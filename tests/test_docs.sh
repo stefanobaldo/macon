@@ -14,9 +14,27 @@ for _s in "mac overnight" "macon on" "macon off" "macon status" "macon report" \
 done
 
 # Every subcommand in the CLI usage must appear in the README.
-for _c in on run off status report saved log failsafe; do
+for _c in on run off 'done' status report saved log failsafe; do
     assert_ok "the README documents the '$_c' subcommand" grep -qF "macon $_c" "$README"
 done
+
+# The variable was never set by anything in this repository. It survived in the
+# integration's docs alone, where it made the bundled skill trigger on a
+# condition that could not occur.
+assert_fail "no document still claims MACON_SENTINEL exists" \
+    grep -rqF "MACON_SENTINEL" "$README" \
+        "$REPO_DIR/integrations" "$REPO_DIR/CHANGELOG.md"
+
+# And the flag is gone from the product, so it must be gone from the prose.
+#
+# CHANGELOG.md is deliberately NOT swept for the flag. Its [0.1.0-rc.1] section
+# describes what that tag shipped, and v0.1.0-rc.1's annotated message was
+# extracted from it -- editing the section would leave the tag and the changelog
+# describing the same release differently, which is the drift CONTRIBUTING's
+# release convention exists to prevent. The removal belongs under [Unreleased].
+assert_fail "no document still offers --sentinel" \
+    grep -rqF -- "--sentinel" "$README" "$REPO_DIR/integrations" \
+        "$REPO_DIR/completions"
 
 # The support table must state what was actually verified, not a promise. This
 # is the assertion that has to fail if the real suite is ever skipped and the
@@ -53,7 +71,7 @@ BASH_C="$REPO_DIR/completions/macon.bash"
 ZSH_C="$REPO_DIR/completions/_macon"
 assert_ok "the bash completion exists" test -f "$BASH_C"
 assert_ok "the zsh completion exists" test -f "$ZSH_C"
-for _c in on run off status report saved log failsafe version help; do
+for _c in on run off 'done' status report saved log failsafe version help; do
     assert_ok "bash completion offers '$_c'" grep -qF "$_c" "$BASH_C"
     assert_ok "zsh completion offers '$_c'" grep -qF "$_c" "$ZSH_C"
 done
