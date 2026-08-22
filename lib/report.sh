@@ -213,10 +213,10 @@ _rep_body() {
     fi
 }
 
-# The index: one row per night, newest first. SINCE is an epoch.
+# The index: one row per session, newest first. SINCE is an epoch.
 rep_html() {
     _rep_open "session report" \
-        "One row per night. Worst thermal pressure is the peak reached at any point during the session."
+        "One row per session, newest first. Worst thermal pressure is the peak reached at any point during it."
     for _h in Session Started Duration "Ended by" "Worst thermal" "Worst at" "Min battery" Samples; do
         printf '<th>%s</th>' "$_h"
     done
