@@ -152,7 +152,7 @@ succeed. Under `macon run`, `--quiet` silences macon and never the command you w
 
 ## Reporting
 
-`macon report` renders a self-contained HTML file — one row per night, with the worst
+`macon report` renders a self-contained HTML file — one row per session, with the worst
 thermal pressure reached and when. A single night cannot tell you whether closed-lid
 operation is thermally sustainable on your machine, or whether moving it to a vertical
 stand helped. Thirty nights can.
