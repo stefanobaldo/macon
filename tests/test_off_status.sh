@@ -453,12 +453,15 @@ assert_ok "and a refused done writes nothing" test ! -e "$_sent"
 # shellcheck disable=SC2317,SC2329
 cli_uid() { id -u; }
 
+# --grace 0 throughout this block: the default grace arrives with the option in
+# the next section, and a countdown is not what these assertions are about.
 rm -f "$_sent"
-assert_ok "done writes the sentinel" cli_cmd_done
+assert_ok "done writes the sentinel" cli_cmd_done --grace 0
 assert_ok "the sentinel is at the descriptor's path" test -f "$_sent"
 
 # Idempotent, and deliberately not an error: an agent that says it twice has
-# told the truth twice.
+# told the truth twice. Bare, because a sentinel that is already down is
+# answered before the grace is ever consulted.
 assert_ok "done is idempotent" cli_cmd_done
 
 # The output must not imply the machine has already restored. macon off proves
@@ -466,8 +469,69 @@ assert_ok "done is idempotent" cli_cmd_done
 # poll has to be named or the message is a lie. Asserted on the FIRST write,
 # not on the idempotent branch, which has a message of its own.
 rm -f "$_sent"
-assert_contains "$(cli_cmd_done 2>&1)" "poll" \
+assert_contains "$(cli_cmd_done --grace 0 2>&1)" "poll" \
     "done says the restore waits for the next poll"
+
+# --- the grace window ---------------------------------------------------------
+#
+# The grace has to run CONCURRENTLY with the caller's last act. A blocking
+# countdown would hold the caller still and then release it to speak, which
+# protects the wrong interval entirely.
+
+_pend="$MACON_STATE/t-done.pending"
+rm -f "$_sent" "$_pend"
+
+# The launch is replaced the way cli_start_session already lets MACON_HELPER_CMD
+# replace the helper's, so the suite never waits on a real sleep.
+MACON_DONE_CMD="printf 'stub %s %s %s\n' \"\$MACON_DONE_GRACE\""
+MACON_DONE_CMD="$MACON_DONE_CMD \"\$MACON_DONE_PENDING\" \"\$MACON_DONE_SENTINEL\""
+MACON_DONE_CMD="$MACON_DONE_CMD > \"\$MACON_STATE/spawned\""
+
+assert_ok "done with a grace succeeds" cli_cmd_done --grace 60
+assert_ok "the pending file appears immediately" test -f "$_pend"
+assert_ok "the sentinel does NOT" test ! -e "$_sent"
+assert_contains "$(cat "$MACON_STATE/spawned")" "60" "the child got the grace"
+assert_contains "$(cat "$MACON_STATE/spawned")" "$_pend" "and the pending path"
+assert_contains "$(cat "$MACON_STATE/spawned")" "$_sent" "and the target path"
+
+# The target epoch is what lets `macon status` tell a live countdown from a dead
+# one, so it has to be a number and it has to be in the future.
+_target=$(head -1 "$_pend")
+assert_ok "the pending file carries a numeric target" _sess_is_number "$_target"
+assert_ok "the target is in the future" test "$_target" -gt "$(macon_now)"
+
+# --grace 0 is the no-countdown case and must not leave a pending file behind.
+rm -f "$_sent" "$_pend" "$MACON_STATE/spawned"
+assert_ok "--grace 0 succeeds" cli_cmd_done --grace 0
+assert_ok "--grace 0 writes the sentinel directly" test -f "$_sent"
+assert_ok "--grace 0 leaves no pending file" test ! -e "$_pend"
+assert_ok "--grace 0 spawns nothing" test ! -e "$MACON_STATE/spawned"
+
+# Garbage is refused rather than coerced: a grace that silently became 0 would
+# cut the caller off mid-sentence, which is the failure this option exists for.
+rm -f "$_sent" "$_pend"
+assert_fail "a non-numeric grace is refused" cli_cmd_done --grace soon
+assert_fail "a negative grace is refused" cli_cmd_done --grace -5
+assert_fail "--grace with no value is refused" cli_cmd_done --grace
+assert_fail "an unknown argument is refused" cli_cmd_done --now
+assert_ok "and none of them wrote anything" test ! -e "$_sent"
+
+# The default is named once, in MACON_DONE_GRACE_DEFAULT, and it is what a
+# caller who says nothing gets. Read back off the pending file's target rather
+# than asserted against a second literal.
+rm -f "$_sent" "$_pend"
+assert_ok "a bare done still succeeds" cli_cmd_done
+assert_eq "$(( $(macon_now) + MACON_DONE_GRACE_DEFAULT ))" "$(head -1 "$_pend")" \
+    "and takes its grace from MACON_DONE_GRACE_DEFAULT"
+
+# A grace that outlives the ceiling cannot work -- the session ends first -- and
+# saying so beats letting it look like it succeeded.
+rm -f "$_sent" "$_pend"
+sess_set "$_d" hard_ceiling "$(( $(macon_now) + 30 ))"
+assert_contains "$(cli_cmd_done --grace 600 2>&1)" "ceiling" \
+    "a grace beyond the ceiling is called out"
+sess_set "$_d" hard_ceiling "$(( $(macon_now) + 3600 ))"
+unset MACON_DONE_CMD
 
 unset MACON_FAKE_NOW
 teardown_state
