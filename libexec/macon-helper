@@ -218,6 +218,14 @@ helper_validate_desc() {
         fi
     fi
 
+    # Every descriptor carries one, so this is no longer conditional on the
+    # completion source.
+    _v=$(sess_get "$_d" sentinel_path)
+    if ! _helper_is_abs_path "$_v"; then
+        macon_warn "descriptor field 'sentinel_path' is not an absolute path: '$_v'"
+        _ok=1
+    fi
+
     case "$(sess_get "$_d" completion)" in
         busy_check)
             if [ -z "$(sess_get "$_d" busy_check)" ]; then
@@ -227,13 +235,6 @@ helper_validate_desc() {
             _v=$(sess_get "$_d" busy_timeout)
             if ! _sess_is_number "$_v"; then
                 macon_warn "descriptor field 'busy_timeout' is not a plain integer: '$_v'"
-                _ok=1
-            fi
-            ;;
-        sentinel)
-            _v=$(sess_get "$_d" sentinel_path)
-            if ! _helper_is_abs_path "$_v"; then
-                macon_warn "descriptor field 'sentinel_path' is not an absolute path: '$_v'"
                 _ok=1
             fi
             ;;
@@ -307,14 +308,23 @@ helper_reset_counters() {
 # Echoes yes | no | unknown.
 helper_probe_busy() {
     _d=$1
+
+    # The push channel, ahead of every pull source and independent of which one
+    # is configured. Existence only -- the contents are never read here, so
+    # nothing a user can write reaches root's parser (BRIEFING.md section 4).
+    #
+    # It is safe in this position for one reason: the sentinel's only possible
+    # answer is "finished". It can turn a 'yes' or an 'unknown' into a 'no' and
+    # never the reverse, so it can shorten a session and can never hold one
+    # open. The hard ceiling is still evaluated before any of this, in
+    # macon_decide.
+    _sent=$(sess_get "$_d" sentinel_path)
+    if [ -n "$_sent" ] && [ -e "$_sent" ]; then
+        printf 'no\n'
+        return 0
+    fi
+
     case "$(sess_get "$_d" completion)" in
-        sentinel)
-            if [ -e "$(sess_get "$_d" sentinel_path)" ]; then
-                printf 'no\n'
-            else
-                printf 'yes\n'
-            fi
-            ;;
         process)
             # kill -0 answers "does this process exist", not "is it still the
             # one we wrapped": within one uptime the number can be recycled.

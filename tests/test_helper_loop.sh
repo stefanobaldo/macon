@@ -38,6 +38,9 @@ setup_desc() {
     sess_set "$D" strikes 2
     sess_set "$D" completion none
     sess_set "$D" user "$(id -un)"
+    # Every session carries one, whatever its pull source is, so every
+    # descriptor built here does too.
+    sess_set "$D" sentinel_path "$MACON_STATE/$ID.done"
     # Runtime state accumulates across polls on purpose; every phase below
     # starts from a clean slate so one phase's strikes cannot fund the next.
     rm -f "$(helper_offac_path)" "$(helper_lidstate_path)" \
@@ -102,6 +105,62 @@ assert_eq "no" "$(helper_probe_busy "$D")" "busy-check exiting non-zero means fi
 sess_set "$D" busy_check "printf 'x\ny\n' | grep -q y"
 assert_eq "yes" "$(helper_probe_busy "$D")" "a busy-check is evaluated by a shell"
 
+# --- push beats pull ---------------------------------------------------------
+#
+# The sentinel is a declaration, the others are probes. "I told you I am done"
+# outranks "your predicate still thinks I am busy" -- and it is safe by
+# construction, because the only thing the sentinel can say is "you may sleep".
+
+SENT="$MACON_STATE/probe.done"
+
+setup_desc
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check /usr/bin/true
+sess_set "$D" busy_timeout 5
+sess_set "$D" sentinel_path "$SENT"
+
+rm -f "$SENT"
+assert_eq "yes" "$(helper_probe_busy "$D")" \
+    "with no sentinel, a busy-check that exits 0 still reports busy"
+
+: > "$SENT"
+assert_eq "no" "$(helper_probe_busy "$D")" \
+    "a sentinel beats a busy-check that reports busy"
+
+# Same for a wrapped process whose PID is alive. $$ is this shell:
+# unambiguously running, so 'no' here can only have come from the sentinel.
+sess_set "$D" completion process
+sess_set "$D" watch_pid $$
+rm -f "$SENT"
+assert_eq "yes" "$(helper_probe_busy "$D")" \
+    "with no sentinel, a live wrapped process reports busy"
+: > "$SENT"
+assert_eq "no" "$(helper_probe_busy "$D")" \
+    "a sentinel beats a live wrapped process"
+
+# --- non-regression: an absent sentinel changes nothing -----------------------
+#
+# This is the assertion that proves the new check only knows how to SHORTEN. If
+# any of these moved, the change reached somewhere it had no business reaching.
+
+rm -f "$SENT"
+sess_set "$D" completion none
+assert_eq "unknown" "$(helper_probe_busy "$D")" \
+    "completion=none still answers unknown with no sentinel"
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check /usr/bin/false
+assert_eq "no" "$(helper_probe_busy "$D")" \
+    "a busy-check that exits non-zero still answers no"
+
+# An empty sentinel_path is not a sentinel that exists: `[ -e "" ]` is false,
+# but a path field read from a descriptor that never carried one must not be
+# allowed anywhere near a test that could answer "finished".
+sess_set "$D" sentinel_path ""
+sess_set "$D" completion busy_check
+sess_set "$D" busy_check /usr/bin/true
+assert_eq "yes" "$(helper_probe_busy "$D")" \
+    "an empty sentinel_path is not a sentinel"
+
 # --- descriptor validation --------------------------------------------------
 #
 # sess_validate covers the nine fields it was written against. These are the
@@ -109,6 +168,17 @@ assert_eq "yes" "$(helper_probe_busy "$D")" "a busy-check is evaluated by a shel
 
 setup_desc
 assert_ok "a minimal descriptor validates" helper_validate_desc "$D"
+
+# sentinel_path is mandatory on every descriptor now, so the absolute-path
+# check leaves the completion `case` and applies unconditionally. Before this, a
+# descriptor with completion=none carried no path and was never checked at all.
+setup_desc
+sess_set "$D" sentinel_path 'not/absolute'
+assert_fail "a relative sentinel_path is refused on any completion source" \
+    helper_validate_desc "$D"
+setup_desc
+sess_set "$D" sentinel_path ""
+assert_fail "an absent sentinel_path is refused too" helper_validate_desc "$D"
 
 setup_desc
 sess_set "$D" policy extend
