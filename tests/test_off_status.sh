@@ -592,5 +592,35 @@ sess_set "$_d" sentinel_path "$_sent"
 
 retire_stub_helper
 
+# --- the session's end takes its files with it --------------------------------
+#
+# `macon off` ends sessions the helper is not around to close, so it owns the
+# same cleanup the helper does.
+
+_d=$(sess_desc_path)
+mkdir -p "$(dirname "$_d")"
+_sent="$MACON_STATE/t-off.done"
+sess_set "$_d" session_id t-off
+sess_set "$_d" started_at "$(macon_now)"
+sess_set "$_d" sentinel_path "$_sent"
+: > "$_sent"
+: > "${_sent%.done}.pending"
+
+cli_cmd_off >/dev/null 2>&1 || :
+
+assert_ok "off removes the sentinel" test ! -e "$_sent"
+assert_ok "off removes the pending file" test ! -e "${_sent%.done}.pending"
+
+# And an idle machine deletes nothing relative to the caller's directory. This
+# is the assertion for the guard, not a hypothetical: without it `off` with no
+# session derives `.pending` and hands it to rm.
+rm -f "$(sess_desc_path)"
+_cwd_pend=$(mktemp -d)
+: > "$_cwd_pend/.pending"
+( cd "$_cwd_pend" && cli_cmd_off >/dev/null 2>&1 ) || :
+assert_ok "off with no session leaves a stray .pending alone" \
+    test -f "$_cwd_pend/.pending"
+rm -rf "$_cwd_pend"
+
 unset MACON_FAKE_NOW
 teardown_state

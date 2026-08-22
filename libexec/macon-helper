@@ -440,6 +440,7 @@ helper_finish() {
     _started=$(sess_get "$_d" started_at)
     _user=$(sess_get "$_d" user)
     _hook=$(sess_get "$_d" hook_end)
+    _sent=$(sess_get "$_d" sentinel_path)
 
     # Restore FIRST. A hung or broken hook must never be able to delay the
     # safety action (spec 9.3), and neither must a bookkeeping failure -- nor an
@@ -472,6 +473,19 @@ helper_finish() {
     # the failure this project exists to prevent.
     rm -f "$(sess_desc_path)" "$(sess_pid_path)" "$(sess_heartbeat_path)" \
         "$(helper_offac_path)" "$(helper_lidstate_path)"
+
+    # The session's own two files go with them, from HERE and nowhere earlier:
+    # below the restore, and below every read helper_probe_busy makes of the
+    # sentinel. Deleting them sooner would throw away the session's own answer
+    # before anything acted on it.
+    #
+    # Only when the path is absolute. `${_sent%.done}.pending` on a descriptor
+    # that lost the field is the RELATIVE path `.pending`, handed to `rm` in
+    # whatever directory the helper was started from -- and a descriptor
+    # missing that field is one of the reasons this function is called at all.
+    case "$_sent" in
+        /*) rm -f "$_sent" "${_sent%.done}.pending" ;;
+    esac
 
     # Bookkeeping cannot fail the session: the restore above has already
     # happened, and this is the same close-out the CLI performs when `off` ends
