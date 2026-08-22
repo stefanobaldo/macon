@@ -945,6 +945,12 @@ cli_cmd_off() {
     cli_record_end "$_id" "$_started" manual
 }
 
+# Generous on purpose. Being wrong in this direction costs two minutes of a
+# machine staying awake; being wrong in the other costs the handoff the human
+# wakes up to read. Under the default 300s poll it is usually invisible anyway
+# -- the grace sets a floor, and the poll is normally what binds.
+MACON_DONE_GRACE_DEFAULT=120
+
 # The unprivileged counterpart to `macon off`. It needs no root: the helper is
 # already root and already polling, so the whole job is to leave the file it is
 # looking for. That asymmetry is the point -- at 03:00 the sudo timestamp has
@@ -959,6 +965,30 @@ cli_cmd_done() {
         "it writes a file in your own state directory and needs no privilege"; then
         return 1
     fi
+
+    _grace=$MACON_DONE_GRACE_DEFAULT
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --grace)
+                if [ $# -lt 2 ]; then
+                    macon_warn "--grace needs a number of seconds"
+                    return 1
+                fi
+                # Through _sess_is_number rather than a second copy of its
+                # bounds: bash 3.2 exits 2 rather than returning false on an
+                # empty or over-long operand to `[ -ge ]`, and the grace
+                # reaches exactly that comparison against the ceiling below.
+                if ! _sess_is_number "$2"; then
+                    macon_warn "--grace needs a whole number of seconds: '$2'"
+                    return 1
+                fi
+                _grace=$2
+                shift 2
+                ;;
+            *)  macon_warn "unknown argument: $1"
+                return 1 ;;
+        esac
+    done
 
     _d=$(sess_desc_path)
     if [ ! -f "$_d" ]; then
@@ -986,13 +1016,61 @@ cli_cmd_done() {
         macon_warn "run 'macon status', and 'macon off' to restore by hand"
     fi
 
-    if ! printf 'done\n' > "$_sent"; then
-        macon_warn "could not write $_sent"
+    if [ "$_grace" -eq 0 ]; then
+        if ! printf 'done\n' > "$_sent"; then
+            macon_warn "could not write $_sent"
+            return 1
+        fi
+        printf 'marked finished.\n'
+        printf 'macon restores at its next poll, within %ss.\n' \
+            "$(sess_get "$_d" interval)"
+        return 0
+    fi
+
+    _target=$(( $(macon_now) + _grace ))
+    _pend="${_sent%.done}.pending"
+
+    _ceil=$(sess_get "$_d" hard_ceiling)
+    if _sess_is_number "$_ceil" && [ "$_target" -ge "$_ceil" ]; then
+        macon_warn "the grace outlasts the hard ceiling; the session ends there first"
+    fi
+
+    # The target goes in the file, not in a variable only this process holds:
+    # it is what lets `macon status` tell a countdown that is still running from
+    # one whose child died, and a dead countdown that cannot be seen is worse
+    # than one that never started.
+    if ! printf '%s\n' "$_target" > "$_pend"; then
+        macon_warn "could not write $_pend"
         return 1
     fi
 
-    printf 'marked finished.\n'
-    printf 'macon restores at its next poll, within %ss.\n' \
+    # Detached, so the grace runs alongside whatever the caller does next rather
+    # than holding it still. Verified on this machine: a child spawned from an
+    # agent's tool call outlives the call returning. nohup as well as & because
+    # a background job in an interactive shell takes SIGHUP when the window
+    # closes, and the spike only exercised a non-interactive one.
+    #
+    # Positional arguments rather than interpolation, so there is no quoting to
+    # get wrong. mv is atomic within a filesystem and both files are siblings,
+    # so the helper never sees a half-written sentinel.
+    #
+    # MACON_DONE_CMD replaces the launch wholesale, the way MACON_HELPER_CMD
+    # does for the helper's: the suite must never wait on a real sleep.
+    MACON_DONE_GRACE=$_grace
+    MACON_DONE_PENDING=$_pend
+    MACON_DONE_SENTINEL=$_sent
+    export MACON_DONE_GRACE MACON_DONE_PENDING MACON_DONE_SENTINEL
+    _cmd=${MACON_DONE_CMD:-}
+    if [ -z "$_cmd" ]; then
+        _cmd="nohup sh -c 'sleep \"\$1\"; mv -f \"\$2\" \"\$3\"' sh"
+        _cmd="$_cmd \"\$MACON_DONE_GRACE\" \"\$MACON_DONE_PENDING\""
+        _cmd="$_cmd \"\$MACON_DONE_SENTINEL\" >/dev/null 2>&1 &"
+    fi
+    eval "$_cmd"
+
+    printf 'marked finished; the sentinel lands at %s (%ss from now).\n' \
+        "$(date -r "$_target" '+%H:%M')" "$_grace"
+    printf 'macon restores at its next poll after that, within %ss.\n' \
         "$(sess_get "$_d" interval)"
     return 0
 }
