@@ -61,4 +61,4 @@ if ! cp "$SRC_DIR/SKILL.md" "$DEST/SKILL.md"; then
 fi
 
 printf 'installed the macon sentinel skill into %s\n' "$DEST"
-printf 'start a session with: macon on 8 --sentinel\n'
+printf 'start a session with: macon on 8, and let the agent run: macon done\n'

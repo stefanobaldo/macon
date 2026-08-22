@@ -53,7 +53,7 @@ than do that.
 End the session as soon as the work finishes, instead of waiting out the clock:
 
     macon run --max 12 -- ./nightly-job.sh        # ends when the process exits
-    macon on 8 --sentinel                          # ends when a file appears
+    macon done                                    # the work says it is finished
     macon on 8 --busy-check 'pgrep -q myjob' \
               --on-expire extend --max 12          # extends while your check says busy
 
@@ -165,12 +165,25 @@ Source the bash one from your profile, or put the zsh one on your `fpath`:
     . /path/to/macon/completions/macon.bash        # bash
     fpath=(/path/to/macon/completions $fpath)      # zsh, before compinit
 
+## Ending a session from another process
+
+Any process that can run a command can end a session early:
+
+    make all; macon done
+
+`macon done` needs no password: it leaves a file the root helper is already
+polling for, which is why it works from an unattended job at 03:00 when `macon
+off` cannot. It waits about two minutes by default, so a caller's last few lines
+of output still get out; `--grace <seconds>` sets that window, and `--grace 0`
+skips it. `macon status` names the file and reports whether the session has been
+marked finished.
+
 ## Optional integrations
 
-`integrations/claude-code/` ships a skill that writes the sentinel when an agent
-finishes its work, so an interactive session ends the moment the work is done rather
-than at the deadline. It is opt-in and installed separately — `install.sh` never
-touches it.
+`integrations/claude-code/` ships an optional skill that teaches an agent to run
+`macon done` when its work is finished, so an interactive session ends the moment
+the work is done rather than at the deadline. It is opt-in and installed
+separately — `install.sh` never touches it.
 
 ## Uninstall
 

@@ -11,6 +11,7 @@ _macon() {
         'on:keep the Mac awake for a number of hours'
         'run:keep it awake while a command runs'
         'off:restore the power configuration now'
+        'done:declare the work finished, without a password'
         'status:show the current state'
         'report:render an HTML report of past sessions'
         'saved:show the stored power snapshot'
@@ -57,6 +58,9 @@ _macon() {
                         '--out[write the report to FILE]:file:_files' \
                         '--since[only sessions after DATE]:date:' \
                         '--session[a single session by id]:id:'
+                    ;;
+                done)
+                    _arguments '--grace[seconds to wait before the sentinel lands]:seconds:'
                     ;;
                 log)
                     _arguments '--session[a single session by id]:id:'
