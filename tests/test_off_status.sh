@@ -417,5 +417,57 @@ case "$OUT" in
     *) assert_eq "loaded" "loaded" "an unparseable state still reads as loaded" ;;
 esac
 
+# --- macon done ---------------------------------------------------------------
+
+# No session armed: there is no path to resolve, and inventing one would leave
+# a file that a LATER session's id can never match. Refuse and say why.
+rm -f "$(sess_desc_path)"
+assert_fail "done refuses with no session armed" cli_cmd_done
+
+# With a session, the file lands at exactly the descriptor's path -- resolved by
+# macon, never supplied by the caller.
+_sent="$MACON_STATE/t-done.done"
+_d=$(sess_desc_path)
+mkdir -p "$(dirname "$_d")"
+sess_set "$_d" session_id t-done
+sess_set "$_d" completion none
+sess_set "$_d" policy restore
+sess_set "$_d" interval 300
+sess_set "$_d" sentinel_path "$_sent"
+sess_set "$_d" hard_ceiling "$(( $(macon_now) + 3600 ))"
+
+# A live helper, so the messages under test are the ordinary ones. Without it
+# every call also warns that nothing is polling -- true, but it puts the word
+# "poll" in the output for a reason that has nothing to do with the assertion
+# below.
+start_stub_helper
+
+# Root is refused before anything is written, with a session armed so the
+# refusal can only have come from the uid. Through cli_uid, which is the seam
+# the rest of the suite uses for exactly this.
+# shellcheck disable=SC2317,SC2329
+cli_uid() { printf '0\n'; }
+rm -f "$_sent"
+assert_fail "done refuses to run as root" cli_cmd_done
+assert_ok "and a refused done writes nothing" test ! -e "$_sent"
+# shellcheck disable=SC2317,SC2329
+cli_uid() { id -u; }
+
+rm -f "$_sent"
+assert_ok "done writes the sentinel" cli_cmd_done
+assert_ok "the sentinel is at the descriptor's path" test -f "$_sent"
+
+# Idempotent, and deliberately not an error: an agent that says it twice has
+# told the truth twice.
+assert_ok "done is idempotent" cli_cmd_done
+
+# The output must not imply the machine has already restored. macon off proves
+# its work synchronously; done returns before anything has happened, so the
+# poll has to be named or the message is a lie. Asserted on the FIRST write,
+# not on the idempotent branch, which has a message of its own.
+rm -f "$_sent"
+assert_contains "$(cli_cmd_done 2>&1)" "poll" \
+    "done says the restore waits for the next poll"
+
 unset MACON_FAKE_NOW
 teardown_state

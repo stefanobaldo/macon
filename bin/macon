@@ -98,6 +98,8 @@ usage:
   macon run --max <hours> -- <cmd>
                                   keep it awake while <cmd> runs
   macon off                       restore power configuration now
+  macon done [--grace N]          declare the work finished; macon restores
+                                  at its next poll, no password needed
   macon status                    show the current state
   macon report [--out FILE] [--since DATE] [--session ID]
                                   render an HTML report of past sessions
@@ -943,6 +945,58 @@ cli_cmd_off() {
     cli_record_end "$_id" "$_started" manual
 }
 
+# The unprivileged counterpart to `macon off`. It needs no root: the helper is
+# already root and already polling, so the whole job is to leave the file it is
+# looking for. That asymmetry is the point -- at 03:00 the sudo timestamp has
+# expired and an unattended caller has no tty to answer a prompt with, which is
+# the same reason cli_start_session gives for the helper owning its own root
+# context from the start.
+cli_cmd_done() {
+    # The uid goes through cli_uid and the check fails closed on an unreadable
+    # one -- see the comment above cli_check_not_root; a bare
+    # `[ "$(id -u)" -eq 0 ]` here is the shape that guard exists to stop.
+    if ! cli_check_not_root "$(cli_uid)" 'macon done' \
+        "it writes a file in your own state directory and needs no privilege"; then
+        return 1
+    fi
+
+    _d=$(sess_desc_path)
+    if [ ! -f "$_d" ]; then
+        macon_warn "no session is armed; there is nothing to finish"
+        return 1
+    fi
+
+    _sent=$(sess_get "$_d" sentinel_path)
+    case "$_sent" in
+        /*) ;;
+        *)  macon_warn "this session carries no usable sentinel path"
+            return 1 ;;
+    esac
+
+    if [ -e "$_sent" ]; then
+        printf 'already marked finished; macon restores at its next poll.\n'
+        return 0
+    fi
+
+    # Nothing is polling, so promising a restore would be false. Still worth
+    # leaving the file: `macon status` reports it, and whoever heals the session
+    # finds it already declared finished.
+    if ! sess_helper_alive; then
+        macon_warn "no live helper -- nothing is polling for this file"
+        macon_warn "run 'macon status', and 'macon off' to restore by hand"
+    fi
+
+    if ! printf 'done\n' > "$_sent"; then
+        macon_warn "could not write $_sent"
+        return 1
+    fi
+
+    printf 'marked finished.\n'
+    printf 'macon restores at its next poll, within %ss.\n' \
+        "$(sess_get "$_d" interval)"
+    return 0
+}
+
 _cli_row() {
     printf '%-17s %s\n' "$1" "$2"
 }
@@ -1584,6 +1638,7 @@ if [ -z "${MACON_CLI_SOURCED:-}" ]; then
         run) shift; cli_cmd_run "$@" ;;
         failsafe) shift; cli_cmd_failsafe "$@" ;;
         off) cli_cmd_off ;;
+        done) shift; cli_cmd_done "$@" ;;
         status) cli_cmd_status ;;
         saved) cli_cmd_saved ;;
         report) shift; cli_cmd_report "$@" ;;
